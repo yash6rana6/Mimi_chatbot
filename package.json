@@ -1,0 +1,20 @@
+{
+  "name": "ai-waifu-bot",
+  "version": "1.0.0",
+  "description": "AI Companion Telegram Bot - DM & Group support, powered by free OpenRouter models",
+  "main": "src/bot.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "nodemon src/bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "mongoose": "^8.5.0",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
