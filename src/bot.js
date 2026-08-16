@@ -132,37 +132,40 @@ bot.command('setbf', async ctx => {
   await ctx.reply(`💕 ID ${targetId} ab agle 24 ghante ke liye bf hai!${isPaid ? ' (paid ✅)' : ''}`);
 });
 
-// ---------- /becomebf - user khud pay karke 24h bf status le sakta hai ----------
+// ---------- /becomebf - user ko DM ka rasta dikhati hai, admin manually verify karke activate karega ----------
 bot.command('becomebf', async ctx => {
   const adminUsername = process.env.ADMIN_CONTACT_USERNAME;
 
-  if (process.env.RAZORPAY_KEY_ID) {
-    // Automatic Razorpay flow
-    try {
-      const { createBFOrder } = require('./payments');
-      const telegramId = String(ctx.from.id);
-      const order = await createBFOrder(telegramId);
-
-      await ctx.reply(
-        `💳 24 ghante ke liye bf status - ₹100\n\nPay karne ke baad automatically activate ho jayega:\nhttps://api.razorpay.com/v1/checkout/embedded/${order.id}\n\n(Order ID: ${order.id})`
-      );
-    } catch (err) {
-      console.error('Payment order error:', err.message);
-      await ctx.reply('Payment link banane mein dikkat aa gayi, thodi der baad try karo 🥺');
-    }
-    return;
+  if (!adminUsername) {
+    return ctx.reply('Ye feature abhi available nahi hai, admin se /setbf ke liye bolo 🙈');
   }
 
-  if (adminUsername) {
-    // Sirf DM ka rasta dikhao, payment details khud privately discuss karo
-    await ctx.reply(
-      `💕 24 ghante ke liye bf status chahiye?\n\n` +
-        `@${adminUsername} ko DM karo apni Telegram ID (${ctx.from.id}) ke saath, wahi aage bata denge kaise activate hoga 🥰`
-    );
-    return;
+  await ctx.reply(
+    `💕 24 ghante ke liye bf status chahiye?\n\n` +
+      `@${adminUsername} ko DM karo apni Telegram ID (${ctx.from.id}) ke saath, wahi aage bata denge kaise activate hoga 🥰`
+  );
+});
+
+// ---------- /removebf <telegram_id> (admin only) - bf status beech mein hi hata do ----------
+bot.command('removebf', async ctx => {
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply('Ye command sirf admin use kar sakta hai 🙅‍♀️');
   }
 
-  await ctx.reply('Ye feature abhi available nahi hai, admin se /setbf ke liye bolo 🙈');
+  let targetId = (ctx.message.text.split(' ')[1] || '').trim();
+  if (!targetId && ctx.message.reply_to_message) {
+    targetId = String(ctx.message.reply_to_message.from.id);
+  }
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    return ctx.reply('Kisi ko reply karke likho /removebf, ya /removebf 123456789');
+  }
+
+  const result = await BF.deleteOne({ telegramId: targetId });
+  if (result.deletedCount) {
+    await ctx.reply(`💔 ID ${targetId} ka bf status hata diya.`);
+  } else {
+    await ctx.reply('Ye currently bf nahi hai.');
+  }
 });
 
 // ---------- /nickname <name> - sirf active bf apna pet name set kar sakta hai ----------
@@ -403,12 +406,6 @@ bot.on('text', async ctx => {
 bot.launch().then(() => {
   console.log(`🌸 ${WAIFU_NAME} bot is live!`);
   startScheduler(bot);
-
-  // Payment server sirf tab start hoga jab Razorpay keys configured hon
-  if (process.env.RAZORPAY_KEY_ID) {
-    const { startPaymentServer } = require('./server');
-    startPaymentServer(bot);
-  }
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));

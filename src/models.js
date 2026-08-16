@@ -9,6 +9,9 @@ const userSchema = new mongoose.Schema({
   lastResetDate: { type: String, default: () => new Date().toISOString().split('T')[0] },
   totalMessages: { type: Number, default: 0 },
   joinedAt: { type: Date, default: Date.now },
+  // Daily chat streak tracking
+  streakCount: { type: Number, default: 0 },
+  lastStreakDate: String, // 'YYYY-MM-DD' format
 });
 
 // Chat history - context ke liye (last N messages store karenge per user)
@@ -43,10 +46,21 @@ const adminSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+// Partner ("bf") - admin isko special bana sakta hai FREE mein (24h), ya user khud ₹100 pay
+// karke apne aap unlock kar sakta hai. Active hone par bot extra affectionate/gf-jaisa tone use karti hai.
+const bfSchema = new mongoose.Schema({
+  telegramId: { type: String, required: true, unique: true, index: true },
+  nickname: String, // pet name jo bf khud set kar sakta hai (e.g. "jaanu")
+  source: { type: String, enum: ['admin', 'payment'], default: 'admin' },
+  expiresAt: { type: Date, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const User = mongoose.model('User', userSchema);
 const ChatHistory = mongoose.model('ChatHistory', chatHistorySchema);
 const GroupMessage = mongoose.model('GroupMessage', groupMessageSchema);
 const Sticker = mongoose.model('Sticker', stickerSchema);
 const Admin = mongoose.model('Admin', adminSchema);
+const BF = mongoose.model('BF', bfSchema);
 
-module.exports = { User, ChatHistory, GroupMessage, Sticker, Admin };
+module.exports = { User, ChatHistory, GroupMessage, Sticker, Admin, BF };
