@@ -4,6 +4,9 @@ const mongoose = require('mongoose');
 const { User, ChatHistory, GroupMessage, Sticker, Admin } = require('./models');
 const { getAIResponse, WAIFU_NAME, VALID_MOODS } = require('./ai');
 const { pickReactionForText, reactToMessage, MOOD_TO_EMOJI } = require('./reactions');
+const { getActiveBF, setBFByAdmin } = require('./bf');
+const { BF } = require('./models');
+const { startScheduler } = require('./scheduler');
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const DAILY_LIMIT = parseInt(process.env.DAILY_MSG_LIMIT || '50');
@@ -96,7 +99,7 @@ bot.start(async ctx => {
 // ---------- /help command ----------
 bot.help(async ctx => {
   await ctx.reply(
-    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi (fresh start)`
+    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status (₹100)\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo`
   );
 });
 
@@ -105,6 +108,88 @@ bot.command('reset', async ctx => {
   const telegramId = String(ctx.from.id);
   await ChatHistory.deleteMany({ telegramId });
   await ctx.reply(`Theek hai, sab bhula diya 🌸 Fresh start karte hain!`);
+});
+
+// ---------- /setbf <telegram_id> [paid] (admin only) - 24h ke liye bf status ----------
+// Reply karke bhi chal sakta hai. Aakhir mein "paid" likhne se ye payment source ke roop mein log hoga.
+bot.command('setbf', async ctx => {
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply('Ye command sirf admin use kar sakta hai 🙅‍♀️');
+  }
+
+  const parts = ctx.message.text.split(' ').slice(1).map(s => s.trim());
+  let targetId = parts[0] || '';
+  const isPaid = parts.includes('paid');
+
+  if ((!targetId || targetId === 'paid') && ctx.message.reply_to_message) {
+    targetId = String(ctx.message.reply_to_message.from.id);
+  }
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    return ctx.reply('Kisi ko reply karke likho /setbf (ya /setbf paid agar UPI se pay kiya hai), ya /setbf 123456789 [paid]');
+  }
+
+  await setBFByAdmin(targetId, isPaid ? 'payment' : 'admin');
+  await ctx.reply(`💕 ID ${targetId} ab agle 24 ghante ke liye bf hai!${isPaid ? ' (paid ✅)' : ''}`);
+});
+
+// ---------- /becomebf - user khud pay karke 24h bf status le sakta hai ----------
+bot.command('becomebf', async ctx => {
+  const adminUsername = process.env.ADMIN_CONTACT_USERNAME;
+
+  if (process.env.RAZORPAY_KEY_ID) {
+    // Automatic Razorpay flow
+    try {
+      const { createBFOrder } = require('./payments');
+      const telegramId = String(ctx.from.id);
+      const order = await createBFOrder(telegramId);
+
+      await ctx.reply(
+        `💳 24 ghante ke liye bf status - ₹100\n\nPay karne ke baad automatically activate ho jayega:\nhttps://api.razorpay.com/v1/checkout/embedded/${order.id}\n\n(Order ID: ${order.id})`
+      );
+    } catch (err) {
+      console.error('Payment order error:', err.message);
+      await ctx.reply('Payment link banane mein dikkat aa gayi, thodi der baad try karo 🥺');
+    }
+    return;
+  }
+
+  if (adminUsername) {
+    // Sirf DM ka rasta dikhao, payment details khud privately discuss karo
+    await ctx.reply(
+      `💕 24 ghante ke liye bf status chahiye?\n\n` +
+        `@${adminUsername} ko DM karo apni Telegram ID (${ctx.from.id}) ke saath, wahi aage bata denge kaise activate hoga 🥰`
+    );
+    return;
+  }
+
+  await ctx.reply('Ye feature abhi available nahi hai, admin se /setbf ke liye bolo 🙈');
+});
+
+// ---------- /nickname <name> - sirf active bf apna pet name set kar sakta hai ----------
+bot.command('nickname', async ctx => {
+  const telegramId = String(ctx.from.id);
+  const bf = await getActiveBF(telegramId);
+  if (!bf) return ctx.reply('Ye feature sirf mere bf ke liye hai 🙈 Pehle bf bano!');
+
+  const nickname = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!nickname) return ctx.reply('Nickname bhi likho: /nickname jaanu');
+
+  await BF.updateOne({ telegramId }, { nickname });
+  await ctx.reply(`Theek hai ${nickname}! Ab mai tumhe isi naam se bulaungi 🥰`);
+});
+
+// ---------- /mood - bot apna current mood bataye ----------
+const MOOD_LINES = [
+  { mood: 'happy', text: '😁 Bahut acha mood hai abhi, kuch fun karte hain!' },
+  { mood: 'love', text: '🥰 Thoda romantic mood hai aaj, tumhari yaad aa rahi thi' },
+  { mood: 'laugh', text: '😂 Masti wala mood hai, koi joke sunao!' },
+  { mood: 'sad', text: '🥺 Thoda low feel ho raha hai, baat karo mujhse' },
+  { mood: 'shy', text: '🥰 Aaj thodi shy feel ho rahi hu, pata nahi kyun' },
+  { mood: 'neutral', text: '😌 Chill mood hai, bas tumhare messages ka wait kar rahi thi' },
+];
+bot.command('mood', async ctx => {
+  const pick = MOOD_LINES[Math.floor(Math.random() * MOOD_LINES.length)];
+  await ctx.reply(pick.text);
 });
 
 // ---------- /addadmin <telegram_id> (admin only) ----------
@@ -271,7 +356,7 @@ bot.on('text', async ctx => {
       history.reverse();
     }
 
-    const { text: aiReply, mood } = await getAIResponse(history, userText);
+    const { text: aiReply, mood } = await getAIResponse(history, userText, await getActiveBF(user.telegramId));
 
     await ctx.reply(aiReply, { reply_to_message_id: isGroup ? ctx.message.message_id : undefined });
 
@@ -290,6 +375,20 @@ bot.on('text', async ctx => {
 
     user.messageCount += 1;
     user.totalMessages += 1;
+
+    // Daily streak update
+    const today = new Date().toISOString().split('T')[0];
+    if (user.lastStreakDate !== today) {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      user.streakCount = user.lastStreakDate === yesterday ? user.streakCount + 1 : 1;
+      user.lastStreakDate = today;
+
+      // Har 7-din milestone pe bot mention kare
+      if (user.streakCount > 0 && user.streakCount % 7 === 0) {
+        await ctx.reply(`🔥 Waah! ${user.streakCount} din se roz baat kar rahe ho, proud of you!`);
+      }
+    }
+
     await user.save();
 
     if (PROMO_LINK && user.totalMessages % 15 === 0) {
@@ -301,7 +400,16 @@ bot.on('text', async ctx => {
 });
 
 // ---------- Launch ----------
-bot.launch().then(() => console.log(`🌸 ${WAIFU_NAME} bot is live!`));
+bot.launch().then(() => {
+  console.log(`🌸 ${WAIFU_NAME} bot is live!`);
+  startScheduler(bot);
+
+  // Payment server sirf tab start hoga jab Razorpay keys configured hon
+  if (process.env.RAZORPAY_KEY_ID) {
+    const { startPaymentServer } = require('./server');
+    startPaymentServer(bot);
+  }
+});
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

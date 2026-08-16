@@ -1,6 +1,6 @@
 const { callGemini } = require('./gemini');
 
-const WAIFU_NAME = process.env.WAIFU_NAME || 'Miku';
+const WAIFU_NAME = process.env.WAIFU_NAME || 'Mimi';
 
 // Allowed moods - inhi tags mein AI response classify karega
 const VALID_MOODS = ['happy', 'love', 'laugh', 'sad', 'shy', 'angry', 'surprised', 'neutral'];
