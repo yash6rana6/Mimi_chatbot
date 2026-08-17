@@ -7,6 +7,7 @@ const { pickReactionForText, reactToMessage, MOOD_TO_EMOJI } = require('./reacti
 const { getActiveBF, setBFByAdmin } = require('./bf');
 const { BF } = require('./models');
 const { startScheduler } = require('./scheduler');
+const { generateVoiceNote } = require('./voice');
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const DAILY_LIMIT = parseInt(process.env.DAILY_MSG_LIMIT || '50');
@@ -18,6 +19,10 @@ const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).fi
 const GROUP_AUTO_REPLY = (process.env.GROUP_AUTO_REPLY || 'true') === 'true';
 const GROUP_AUTO_REPLY_CHANCE = parseFloat(process.env.GROUP_AUTO_REPLY_CHANCE || '0.06');
 const GROUP_AUTO_REPLY_COOLDOWN = parseInt(process.env.GROUP_AUTO_REPLY_COOLDOWN || '180') * 1000;
+
+// Voice message settings
+const VOICE_ENABLED = (process.env.VOICE_ENABLED || 'false') === 'true';
+const VOICE_REPLY_CHANCE = parseFloat(process.env.VOICE_REPLY_CHANCE || '0.15');
 
 // In-memory cooldown tracker per group (chatId -> last autonomous reply timestamp)
 const lastAutoReplyAt = new Map();
@@ -99,7 +104,7 @@ bot.start(async ctx => {
 // ---------- /help command ----------
 bot.help(async ctx => {
   await ctx.reply(
-    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status (₹100)\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo`
+    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo\n/voice <text> - mujhse voice message mein sunwao`
   );
 });
 
@@ -165,6 +170,24 @@ bot.command('removebf', async ctx => {
     await ctx.reply(`💔 ID ${targetId} ka bf status hata diya.`);
   } else {
     await ctx.reply('Ye currently bf nahi hai.');
+  }
+});
+
+// ---------- /voice <text> - koi bhi text ko Mimi ki voice mein sun sakta hai ----------
+bot.command('voice', async ctx => {
+  if (!VOICE_ENABLED) {
+    return ctx.reply('Voice feature abhi off hai 🙈');
+  }
+  const text = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!text) return ctx.reply('Kuch text bhi do: /voice hii kaise ho tum');
+
+  try {
+    await ctx.sendChatAction('record_voice');
+    const voiceBuffer = await generateVoiceNote(text);
+    await ctx.replyWithVoice({ source: voiceBuffer });
+  } catch (err) {
+    console.error('Voice command error:', err.message);
+    await ctx.reply('Voice banane mein dikkat aa gayi 🥺 thodi der baad try karo');
   }
 });
 
@@ -361,7 +384,28 @@ bot.on('text', async ctx => {
 
     const { text: aiReply, mood } = await getAIResponse(history, userText, await getActiveBF(user.telegramId));
 
-    await ctx.reply(aiReply, { reply_to_message_id: isGroup ? ctx.message.message_id : undefined });
+    // Kabhi kabhi poora reply hi voice message mein bhej do (text ki jagah, real insaan jaisa)
+    const sendAsVoice = VOICE_ENABLED && Math.random() < VOICE_REPLY_CHANCE;
+    let voiceSent = false;
+
+    if (sendAsVoice) {
+      try {
+        await ctx.sendChatAction('record_voice');
+        const voiceBuffer = await generateVoiceNote(aiReply);
+        await ctx.replyWithVoice(
+          { source: voiceBuffer },
+          { reply_to_message_id: isGroup ? ctx.message.message_id : undefined }
+        );
+        voiceSent = true;
+      } catch (err) {
+        console.error('Voice reply error:', err.message);
+        // Voice fail ho jaye to neeche text fallback ho jayega
+      }
+    }
+
+    if (!voiceSent) {
+      await ctx.reply(aiReply, { reply_to_message_id: isGroup ? ctx.message.message_id : undefined });
+    }
 
     if (isGroup) lastAutoReplyAt.set(String(ctx.chat.id), Date.now());
 
