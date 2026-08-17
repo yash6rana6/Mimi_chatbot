@@ -1,21 +1,26 @@
-const axios = require('axios');
+const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { PassThrough } = require('stream');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-const POLLINATIONS_VOICE = process.env.POLLINATIONS_VOICE || 'nova';
+// Microsoft Edge ka free neural TTS (wahi jo Edge browser "Read Aloud" mein use hota hai)
+// Google Translate TTS se kaafi zyada natural/human-jaisa sound karta hai, koi key nahi chahiye
+const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || 'hi-IN-SwaraNeural'; // female Hindi voice
 
-// Pollinations ke free TTS se text ko MP3 audio mein convert karta hai
+// Edge TTS se text ko MP3 audio (Buffer) mein convert karta hai
 async function textToMp3(text) {
-  const url = `https://text.pollinations.ai/${encodeURIComponent(text)}`;
-  const response = await axios.get(url, {
-    params: { model: 'openai-audio', voice: POLLINATIONS_VOICE },
-    responseType: 'arraybuffer',
-    timeout: 30000,
+  const tts = new MsEdgeTTS();
+  await tts.setMetadata(EDGE_TTS_VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  const { audioStream } = await tts.toStream(text);
+
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    audioStream.on('data', chunk => chunks.push(chunk));
+    audioStream.on('end', () => resolve(Buffer.concat(chunks)));
+    audioStream.on('error', reject);
   });
-  return Buffer.from(response.data);
 }
 
 // MP3 ko Telegram voice-note format (OGG/Opus) mein convert karta hai

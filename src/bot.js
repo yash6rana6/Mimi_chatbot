@@ -8,6 +8,18 @@ const { getActiveBF, setBFByAdmin } = require('./bf');
 const { BF } = require('./models');
 const { startScheduler } = require('./scheduler');
 const { generateVoiceNote } = require('./voice');
+const games = require('./games');
+const ttt = require('./ttt');
+
+// Telegram "message is not modified" error dena band karta hai jab do log same button
+// double-click kar dein ya content wahi ho - crash hone se bachata hai
+async function safeEditMessageText(ctx, text, extra) {
+  try {
+    await ctx.editMessageText(text, extra);
+  } catch (err) {
+    if (!err.description?.includes('message is not modified')) throw err;
+  }
+}
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const DAILY_LIMIT = parseInt(process.env.DAILY_MSG_LIMIT || '50');
@@ -104,7 +116,7 @@ bot.start(async ctx => {
 // ---------- /help command ----------
 bot.help(async ctx => {
   await ctx.reply(
-    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo\n/voice <text> - mujhse voice message mein sunwao`
+    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo\n/voice <text> - mujhse voice message mein sunwao\n\n🎮 Games:\n/games - saare games ka menu\n/truthordare - Truth ya Dare khelo\n/wyr - Would You Rather\n/love <naam1> aur <naam2> - Compatibility calculator\n/quiz - Trivia quiz\n/ttt - Tic-Tac-Toe (2 players)`
   );
 });
 
@@ -188,6 +200,230 @@ bot.command('voice', async ctx => {
   } catch (err) {
     console.error('Voice command error:', err.message);
     await ctx.reply('Voice banane mein dikkat aa gayi 🥺 thodi der baad try karo');
+  }
+});
+
+// ============ GAMES ============
+
+// ---------- /games - saare games ek jagah, buttons se launch karo ----------
+bot.command('games', async ctx => {
+  await ctx.reply('🎮 Games Menu - kya khelna hai?', {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🤔🔥 Truth or Dare', callback_data: 'menu:truthordare' }],
+        [{ text: '🆚 Would You Rather', callback_data: 'menu:wyr' }],
+        [{ text: '💘 Love Calculator', callback_data: 'menu:love' }],
+        [{ text: '❓ Quiz', callback_data: 'menu:quiz' }],
+        [{ text: '❌⭕ Tic-Tac-Toe', callback_data: 'menu:ttt' }],
+      ],
+    },
+  });
+});
+
+bot.action(/^menu:(.+)$/, async ctx => {
+  const game = ctx.match[1];
+  await ctx.answerCbQuery();
+
+  if (game === 'love') {
+    return ctx.reply('💘 Use karo: /love naam1 aur naam2\n\nExample: /love Yash aur Priya');
+  }
+
+  if (game === 'truthordare') {
+    return ctx.reply('Truth ya Dare? 😏', {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🤔 Truth', callback_data: 'tod:truth' },
+          { text: '🔥 Dare', callback_data: 'tod:dare' },
+        ]],
+      },
+    });
+  }
+
+  if (game === 'wyr') {
+    const q = games.getRandomWYR();
+    return ctx.reply('🆚 Would You Rather...', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `A) ${q.a}`, callback_data: 'wyr:a' }],
+          [{ text: `B) ${q.b}`, callback_data: 'wyr:b' }],
+        ],
+      },
+    });
+  }
+
+  if (game === 'quiz') {
+    const q = games.getRandomQuiz();
+    const buttons = q.options.map((opt, i) => [{ text: opt, callback_data: `quiz:${i}:${q.correct}` }]);
+    return ctx.reply(`❓ ${q.q}`, { reply_markup: { inline_keyboard: buttons } });
+  }
+
+  if (game === 'ttt') {
+    const chatId = ctx.chat.id;
+    if (ttt.getGame(chatId)) {
+      return ctx.reply('Ek game already chal raha hai is chat mein! Pehle wo khatam karo.');
+    }
+    ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
+    return ctx.reply(
+      `❌⭕ Tic-Tac-Toe shuru! ${ctx.from.first_name} ne challenge kiya hai.\n\nKoi doosra khilaadi "Join" dabao!`,
+      { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
+    );
+  }
+});
+
+// ---------- /truth - random truth question ----------
+bot.command('truth', async ctx => {
+  await ctx.reply(`🤔 Truth: ${games.getRandomTruth()}`);
+});
+
+// ---------- /dare - random dare ----------
+bot.command('dare', async ctx => {
+  await ctx.reply(`🔥 Dare: ${games.getRandomDare()}`);
+});
+
+// ---------- /truthordare - buttons se choose karo ----------
+bot.command('truthordare', async ctx => {
+  await ctx.reply('Truth ya Dare? 😏', {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '🤔 Truth', callback_data: 'tod:truth' },
+        { text: '🔥 Dare', callback_data: 'tod:dare' },
+      ]],
+    },
+  });
+});
+
+bot.action(/^tod:(truth|dare)$/, async ctx => {
+  const type = ctx.match[1];
+  const result = type === 'truth' ? games.getRandomTruth() : games.getRandomDare();
+  const emoji = type === 'truth' ? '🤔' : '🔥';
+  await safeEditMessageText(ctx, `${emoji} ${type === 'truth' ? 'Truth' : 'Dare'}: ${result}`);
+  await ctx.answerCbQuery();
+});
+
+// ---------- /wyr - Would You Rather ----------
+bot.command('wyr', async ctx => {
+  const q = games.getRandomWYR();
+  await ctx.reply(`🆚 Would You Rather...`, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: `A) ${q.a}`, callback_data: 'wyr:a' }],
+        [{ text: `B) ${q.b}`, callback_data: 'wyr:b' }],
+      ],
+    },
+  });
+});
+
+bot.action(/^wyr:(a|b)$/, async ctx => {
+  const choice = ctx.match[1].toUpperCase();
+  await ctx.answerCbQuery(`Tumne ${choice} choose kiya! 😄`);
+  await ctx.reply(`Nice choice! ${choice === 'A' ? '🅰️' : '🅱️'} Ek aur khelna hai? /wyr`);
+});
+
+// ---------- /love <naam1> <naam2> - Compatibility Calculator ----------
+bot.command('love', async ctx => {
+  const parts = ctx.message.text.split(' ').slice(1).join(' ').split(/\s+aur\s+|\s*&\s*|\s*,\s*/i);
+  let name1 = (parts[0] || '').trim();
+  let name2 = (parts[1] || '').trim();
+
+  if (!name1 || !name2) {
+    return ctx.reply('Do naam do: /love Yash aur Priya');
+  }
+
+  const { percent, message } = games.calculateLoveCompatibility(name1, name2);
+  const bar = '💗'.repeat(Math.round(percent / 10)) + '🖤'.repeat(10 - Math.round(percent / 10));
+
+  await ctx.reply(`💘 ${name1} + ${name2}\n\n${bar}\n${percent}% match!\n\n${message}`);
+});
+
+// ---------- /quiz - relationship/general trivia ----------
+bot.command('quiz', async ctx => {
+  const q = games.getRandomQuiz();
+  const buttons = q.options.map((opt, i) => [
+    { text: opt, callback_data: `quiz:${i}:${q.correct}` },
+  ]);
+  await ctx.reply(`❓ ${q.q}`, { reply_markup: { inline_keyboard: buttons } });
+});
+
+bot.action(/^quiz:(\d):(\d)$/, async ctx => {
+  const chosen = parseInt(ctx.match[1]);
+  const correct = parseInt(ctx.match[2]);
+  if (chosen === correct) {
+    await ctx.answerCbQuery('✅ Sahi jawab!');
+    await safeEditMessageText(ctx, `✅ Sahi jawab tha! Bohot smart ho 🧠\nAur khelna hai? /quiz`);
+  } else {
+    await ctx.answerCbQuery('❌ Galat!');
+    await safeEditMessageText(ctx, `❌ Galat tha, koi baat nahi! Phir try karo /quiz`);
+  }
+});
+
+// ---------- /ttt - Tic-Tac-Toe (2 player, groups mein best) ----------
+bot.command('ttt', async ctx => {
+  const chatId = ctx.chat.id;
+  const existing = ttt.getGame(chatId);
+  if (existing) {
+    return ctx.reply('Ek game already chal raha hai is chat mein! Pehle wo khatam karo.');
+  }
+
+  ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
+  await ctx.reply(
+    `❌⭕ Tic-Tac-Toe shuru! ${ctx.from.first_name} ne challenge kiya hai.\n\nKoi doosra khilaadi "Join" dabao!`,
+    { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
+  );
+});
+
+bot.action(/^ttt_join:(-?\d+)$/, async ctx => {
+  const chatId = ctx.match[1];
+  const game = ttt.joinGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 2');
+  if (!game) {
+    return ctx.answerCbQuery('Ye game join nahi ho sakta (already full ya khud ka game hai)', { show_alert: true });
+  }
+
+  await ctx.answerCbQuery('Game join ho gaya!');
+  const p1Name = game.names[game.players[0]];
+  const p2Name = game.names[game.players[1]];
+  await safeEditMessageText(ctx, 
+    `❌ ${p1Name} vs ⭕ ${p2Name}\n\nAbhi turn hai: ${p1Name} (❌)`,
+    { reply_markup: ttt.buildKeyboard(chatId, game.board) }
+  );
+});
+
+bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
+  const chatId = ctx.match[1];
+  const cellIndex = parseInt(ctx.match[2]);
+  const result = ttt.makeMove(chatId, ctx.from.id, cellIndex);
+
+  if (!result.success) {
+    const messages = {
+      no_game: 'Ye game khatam ho chuka hai.',
+      waiting_for_player: 'Abhi dusre player ka wait ho raha hai!',
+      not_your_turn: 'Ye tumhari turn nahi hai!',
+      cell_taken: 'Ye cell already filled hai!',
+    };
+    return ctx.answerCbQuery(messages[result.reason] || 'Invalid move', { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+
+  const { winner, board, game } = result;
+  const p1Name = game?.names?.[game.players[0]] || 'Player 1';
+  const p2Name = game?.names?.[game.players[1]] || 'Player 2';
+
+  if (winner === 'draw') {
+    await safeEditMessageText(ctx, `🤝 Match draw ho gaya! Achha khela dono ne.`, {
+      reply_markup: ttt.buildKeyboard(chatId, board),
+    });
+  } else if (winner) {
+    const winnerName = winner === 'X' ? p1Name : p2Name;
+    await safeEditMessageText(ctx, `🎉 ${winnerName} (${winner === 'X' ? '❌' : '⭕'}) jeet gaye!`, {
+      reply_markup: ttt.buildKeyboard(chatId, board),
+    });
+  } else {
+    const currentGame = ttt.getGame(chatId);
+    const turnName = currentGame.names[currentGame.turn];
+    const turnSymbol = currentGame.turn === currentGame.players[0] ? '❌' : '⭕';
+    await safeEditMessageText(ctx, `❌ ${p1Name} vs ⭕ ${p2Name}\n\nAbhi turn hai: ${turnName} (${turnSymbol})`, {
+      reply_markup: ttt.buildKeyboard(chatId, board),
+    });
   }
 });
 
@@ -359,7 +595,16 @@ bot.on('text', async ctx => {
     const quickReaction = pickReactionForText(userText);
     if (quickReaction) await reactToMessage(ctx, quickReaction);
 
-    await ctx.sendChatAction('typing');
+    // Agar bot ko is chat mein likhne ki permission na ho (kicked/muted/restricted),
+    // to yahin turant ruk jao - AI call waste mat karo jab reply bhej hi nahi sakte
+    try {
+      await ctx.sendChatAction('typing');
+    } catch (err) {
+      if (err.description?.includes('CHAT_WRITE_FORBIDDEN') || err.response?.description?.includes('CHAT_WRITE_FORBIDDEN')) {
+        return; // Silently skip - is group/chat mein bot band hai
+      }
+      throw err;
+    }
 
     // Group mein autonomous reply ke liye recent group chat context use karo,
     // warna (DM ya direct tag) per-user chat history use karo
@@ -382,7 +627,16 @@ bot.on('text', async ctx => {
       history.reverse();
     }
 
-    const { text: aiReply, mood } = await getAIResponse(history, userText, await getActiveBF(user.telegramId));
+    const ownerContext = {
+      isOwner: ADMIN_IDS.includes(user.telegramId),
+      ownerName: process.env.OWNER_NAME || '',
+    };
+    const { text: aiReply, mood } = await getAIResponse(
+      history,
+      userText,
+      await getActiveBF(user.telegramId),
+      ownerContext
+    );
 
     // Kabhi kabhi poora reply hi voice message mein bhej do (text ki jagah, real insaan jaisa)
     const sendAsVoice = VOICE_ENABLED && Math.random() < VOICE_REPLY_CHANCE;
@@ -442,6 +696,10 @@ bot.on('text', async ctx => {
       await ctx.reply(`✨ ${PROMO_TEXT}\n${PROMO_LINK}`);
     }
   } catch (err) {
+    if (err.description?.includes('CHAT_WRITE_FORBIDDEN') || err.response?.description?.includes('CHAT_WRITE_FORBIDDEN')) {
+      // Bot ki us chat mein likhne ki permission nahi hai (kicked/muted) - console spam mat karo
+      return;
+    }
     console.error('Message handler error:', err);
   }
 });
