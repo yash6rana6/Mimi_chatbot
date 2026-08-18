@@ -1,10 +1,10 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
-const { User, ChatHistory, GroupMessage, Sticker, Admin } = require('./models');
+const { User, ChatHistory, GroupMessage, Sticker, Admin, Score, GroupMember } = require('./models');
 const { getAIResponse, WAIFU_NAME, VALID_MOODS } = require('./ai');
 const { pickReactionForText, reactToMessage, MOOD_TO_EMOJI } = require('./reactions');
-const { getActiveBF, setBFByAdmin } = require('./bf');
+const { getActiveBF, getActiveBFIdentity, setBFByAdmin } = require('./bf');
 const { BF } = require('./models');
 const { startScheduler } = require('./scheduler');
 const { generateVoiceNote } = require('./voice');
@@ -76,6 +76,41 @@ async function isAdmin(ctx) {
   return !!found;
 }
 
+// Sirf .env wale "owner" admins hi naye admin add/remove kar sakte hain (top-level control)
+function isOwnerAdmin(ctx) {
+  return ADMIN_IDS.includes(String(ctx.from.id));
+}
+
+// Group ke member ko track karta hai - /tagall ke liye zaroori hai
+async function trackGroupMember(ctx) {
+  try {
+    await GroupMember.findOneAndUpdate(
+      { chatId: String(ctx.chat.id), telegramId: String(ctx.from.id) },
+      {
+        username: ctx.from.username || '',
+        firstName: ctx.from.first_name || 'User',
+        lastSeen: new Date(),
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('trackGroupMember error:', err.message);
+  }
+}
+
+// Score add karta hai kisi user ko us chat mein (games ke liye)
+async function addScore(chatId, telegramId, name, field, points = 10) {
+  try {
+    await Score.findOneAndUpdate(
+      { chatId: String(chatId), telegramId: String(telegramId) },
+      { $inc: { [field]: 1, points }, $set: { name } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('addScore error:', err.message);
+  }
+}
+
 // ---------- Decide: group mein reply karna hai ya nahi, aur kis wajah se ----------
 // Returns: { should: bool, reason: 'tagged' | 'name' | 'random' | null }
 function decideGroupReply(ctx) {
@@ -116,7 +151,7 @@ bot.start(async ctx => {
 // ---------- /help command ----------
 bot.help(async ctx => {
   await ctx.reply(
-    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo\n/voice <text> - mujhse voice message mein sunwao\n\n🎮 Games:\n/games - saare games ka menu\n/truthordare - Truth ya Dare khelo\n/wyr - Would You Rather\n/love <naam1> aur <naam2> - Compatibility calculator\n/quiz - Trivia quiz\n/ttt - Tic-Tac-Toe (2 players)`
+    `📖 Kaise use karu:\n\n• DM mein direct message karo\n• Group mein @${ctx.botInfo.username} tag karo, mera naam lo, ya mere message ko reply karo\n• Kabhi kabhi main khud se bhi baat mein kood jaati hu 😄\n• Daily ${DAILY_LIMIT} messages free hain\n\n/reset - purani chat bhula dungi\n/mood - mera current mood pucho\n/becomebf - 24h ke liye special bf status\n/nickname <naam> - (sirf bf ke liye) apna pet name set karo\n/voice <text> - mujhse voice message mein sunwao\n\n🎮 Games:\n/games - saare games ka menu\n/truthordare - Truth ya Dare khelo\n/wyr - Would You Rather\n/love <naam1> aur <naam2> - Compatibility calculator\n/quiz - Trivia quiz\n/ttt - Tic-Tac-Toe (2 players)\n/leaderboard - is group ka top scorers\n\n👑 Admin:\n/tagall <message> - sabko mention karo`
   );
 });
 
@@ -137,16 +172,28 @@ bot.command('setbf', async ctx => {
   const parts = ctx.message.text.split(' ').slice(1).map(s => s.trim());
   let targetId = parts[0] || '';
   const isPaid = parts.includes('paid');
+  let targetName = '';
 
   if ((!targetId || targetId === 'paid') && ctx.message.reply_to_message) {
     targetId = String(ctx.message.reply_to_message.from.id);
+    targetName = ctx.message.reply_to_message.from.first_name || '';
   }
   if (!targetId || !/^\d+$/.test(targetId)) {
     return ctx.reply('Kisi ko reply karke likho /setbf (ya /setbf paid agar UPI se pay kiya hai), ya /setbf 123456789 [paid]');
   }
 
-  await setBFByAdmin(targetId, isPaid ? 'payment' : 'admin');
-  await ctx.reply(`💕 ID ${targetId} ab agle 24 ghante ke liye bf hai!${isPaid ? ' (paid ✅)' : ''}`);
+  // Agar reply se naam nahi mila (ID manually diya tha), Telegram se fetch karne ki koshish karo
+  if (!targetName) {
+    try {
+      const chatInfo = await ctx.telegram.getChat(targetId);
+      targetName = chatInfo.first_name || '';
+    } catch (err) {
+      // Fetch nahi hua to koi baat nahi, name blank rahega
+    }
+  }
+
+  await setBFByAdmin(targetId, isPaid ? 'payment' : 'admin', targetName);
+  await ctx.reply(`💕 ID ${targetId}${targetName ? ` (${targetName})` : ''} ab agle 24 ghante ke liye bf hai!${isPaid ? ' (paid ✅)' : ''}`);
 });
 
 // ---------- /becomebf - user ko DM ka rasta dikhati hai, admin manually verify karke activate karega ----------
@@ -204,6 +251,54 @@ bot.command('voice', async ctx => {
 });
 
 // ============ GAMES ============
+
+// ---------- /tagall - group ke saare known members ko mention karo (admin only, spam-protection) ----------
+bot.command('tagall', async ctx => {
+  const isGroup = ['group', 'supergroup'].includes(ctx.chat.type);
+  if (!isGroup) return ctx.reply('Ye command sirf groups mein kaam karta hai.');
+
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply('Ye command sirf admin use kar sakta hai 🙅‍♀️ (spam se bachne ke liye)');
+  }
+
+  const chatId = String(ctx.chat.id);
+  const members = await GroupMember.find({ chatId }).lean();
+
+  if (!members.length) {
+    return ctx.reply('Abhi tak koi member track nahi hua. Log message bhejenge to yahan aayenge.');
+  }
+
+  const customMsg = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  const header = customMsg ? `📢 ${customMsg}\n\n` : '📢 Sabko tag kiya:\n\n';
+
+  // Telegram message limit se bachne ke liye batches mein bhejo (10 mentions per message)
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < members.length; i += BATCH_SIZE) {
+    const batch = members.slice(i, i + BATCH_SIZE);
+    const mentions = batch
+      .map(m => `[${m.firstName || 'User'}](tg://user?id=${m.telegramId})`)
+      .join(' ');
+    await ctx.reply(i === 0 ? header + mentions : mentions, { parse_mode: 'Markdown' });
+  }
+});
+
+
+bot.command('leaderboard', async ctx => {
+  const chatId = String(ctx.chat.id);
+  const top = await Score.find({ chatId }).sort({ points: -1 }).limit(10).lean();
+
+  if (!top.length) {
+    return ctx.reply('Abhi koi score nahi hai! Games khelo: /games 🎮');
+  }
+
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = top.map((s, i) => {
+    const medal = medals[i] || `${i + 1}.`;
+    return `${medal} ${s.name} - ${s.points} pts (Quiz: ${s.quizWins}, TTT: ${s.tttWins})`;
+  });
+
+  await ctx.reply(`🏆 Leaderboard:\n\n${lines.join('\n')}`);
+});
 
 // ---------- /games - saare games ek jagah, buttons se launch karo ----------
 bot.command('games', async ctx => {
@@ -350,6 +445,7 @@ bot.action(/^quiz:(\d):(\d)$/, async ctx => {
   if (chosen === correct) {
     await ctx.answerCbQuery('✅ Sahi jawab!');
     await safeEditMessageText(ctx, `✅ Sahi jawab tha! Bohot smart ho 🧠\nAur khelna hai? /quiz`);
+    await addScore(ctx.chat.id, ctx.from.id, ctx.from.first_name || 'Player', 'quizWins', 10);
   } else {
     await ctx.answerCbQuery('❌ Galat!');
     await safeEditMessageText(ctx, `❌ Galat tha, koi baat nahi! Phir try karo /quiz`);
@@ -413,10 +509,12 @@ bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
   } else if (winner) {
+    const winnerId = winner === 'X' ? game.players[0] : game.players[1];
     const winnerName = winner === 'X' ? p1Name : p2Name;
     await safeEditMessageText(ctx, `🎉 ${winnerName} (${winner === 'X' ? '❌' : '⭕'}) jeet gaye!`, {
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
+    await addScore(chatId, winnerId, winnerName, 'tttWins', 15);
   } else {
     const currentGame = ttt.getGame(chatId);
     const turnName = currentGame.names[currentGame.turn];
@@ -454,10 +552,10 @@ bot.command('mood', async ctx => {
   await ctx.reply(pick.text);
 });
 
-// ---------- /addadmin <telegram_id> (admin only) ----------
+// ---------- /addadmin <telegram_id> (owner only) ----------
 bot.command('addadmin', async ctx => {
-  if (!(await isAdmin(ctx))) {
-    return ctx.reply('Ye command sirf admin use kar sakta hai 🙅‍♀️');
+  if (!isOwnerAdmin(ctx)) {
+    return ctx.reply('Ye command sirf owner use kar sakta hai 👑');
   }
 
   const targetId = (ctx.message.text.split(' ')[1] || '').trim();
@@ -472,10 +570,10 @@ bot.command('addadmin', async ctx => {
   await ctx.reply(`✅ ID ${targetId} ko admin bana diya!`);
 });
 
-// ---------- /removeadmin <telegram_id> (admin only) ----------
+// ---------- /removeadmin <telegram_id> (owner only) ----------
 bot.command('removeadmin', async ctx => {
-  if (!(await isAdmin(ctx))) {
-    return ctx.reply('Ye command sirf admin use kar sakta hai 🙅‍♀️');
+  if (!isOwnerAdmin(ctx)) {
+    return ctx.reply('Ye command sirf owner use kar sakta hai 👑');
   }
 
   const targetId = (ctx.message.text.split(' ')[1] || '').trim();
@@ -575,6 +673,9 @@ bot.on('text', async ctx => {
         content: rawText,
       });
 
+      // Member ko track karo /tagall ke liye (background mein, block nahi karta)
+      trackGroupMember(ctx);
+
       const decision = decideGroupReply(ctx);
       if (!decision.should) return;
       groupReplyReason = decision.reason;
@@ -631,11 +732,15 @@ bot.on('text', async ctx => {
       isOwner: ADMIN_IDS.includes(user.telegramId),
       ownerName: process.env.OWNER_NAME || '',
     };
+    // Bot ko hamesha apne active bf ki identity pata honi chahiye, chahe koi bhi type kar raha ho -
+    // isse koi doosra "uska naam lekar" bot ko uske khilaf gaali nahi dilwa sakta
+    const bfIdentity = await getActiveBFIdentity();
     const { text: aiReply, mood } = await getAIResponse(
       history,
       userText,
       await getActiveBF(user.telegramId),
-      ownerContext
+      ownerContext,
+      bfIdentity
     );
 
     // Kabhi kabhi poora reply hi voice message mein bhej do (text ki jagah, real insaan jaisa)

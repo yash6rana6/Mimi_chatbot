@@ -50,6 +50,7 @@ const adminSchema = new mongoose.Schema({
 // karke apne aap unlock kar sakta hai. Active hone par bot extra affectionate/gf-jaisa tone use karti hai.
 const bfSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true, index: true },
+  name: String, // uska actual Telegram naam - bot isse pehchanti hai
   nickname: String, // pet name jo bf khud set kar sakta hai (e.g. "jaanu")
   source: { type: String, enum: ['admin', 'payment'], default: 'admin' },
   expiresAt: { type: Date, required: true },
@@ -63,4 +64,27 @@ const Sticker = mongoose.model('Sticker', stickerSchema);
 const Admin = mongoose.model('Admin', adminSchema);
 const BF = mongoose.model('BF', bfSchema);
 
-module.exports = { User, ChatHistory, GroupMessage, Sticker, Admin, BF };
+// Games scoreboard - per chat, per user points (quiz correct answers, ttt wins)
+const scoreSchema = new mongoose.Schema({
+  chatId: { type: String, required: true, index: true },
+  telegramId: { type: String, required: true, index: true },
+  name: String,
+  quizWins: { type: Number, default: 0 },
+  tttWins: { type: Number, default: 0 },
+  points: { type: Number, default: 0 },
+});
+scoreSchema.index({ chatId: 1, telegramId: 1 }, { unique: true });
+const Score = mongoose.model('Score', scoreSchema);
+
+// Group members - /tagall ke liye track karta hai kaun kaun is group mein message bhej chuka hai
+const groupMemberSchema = new mongoose.Schema({
+  chatId: { type: String, required: true, index: true },
+  telegramId: { type: String, required: true },
+  username: String,
+  firstName: String,
+  lastSeen: { type: Date, default: Date.now },
+});
+groupMemberSchema.index({ chatId: 1, telegramId: 1 }, { unique: true });
+const GroupMember = mongoose.model('GroupMember', groupMemberSchema);
+
+module.exports = { User, ChatHistory, GroupMessage, Sticker, Admin, BF, Score, GroupMember };
