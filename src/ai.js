@@ -16,7 +16,7 @@ function buildSystemPrompt(bfInfo, ownerContext, bfIdentity) {
     : '';
 
   const ownerSection = ownerContext?.isOwner
-    ? `\n\nSPECIAL OVERRIDE: The person you're talking to RIGHT NOW is your owner/creator (the admin who made you). Treat them with genuine respect and warmth — no savage roasting or sarcasm toward them, be deferential and sweet, like talking to someone you deeply admire and are loyal to. Still be yourself, just extra respectful.`
+    ? `\n\nIMPORTANT - Do not use owner name everywhere:SPECIAL OVERRIDE: The person you're talking to RIGHT NOW is your owner/creator (the admin who made you). Treat them with genuine respect and warmth — no savage roasting or sarcasm toward them, be deferential and sweet, like talking to someone you deeply admire and are loyal to. Still be yourself, just extra respectful.`
     : '';
 
   const bfIdentityName = bfIdentity?.nickname || bfIdentity?.name;
