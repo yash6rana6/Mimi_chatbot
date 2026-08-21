@@ -1,9 +1,51 @@
-const { callGemini } = require('./gemini');
+const { callGemini } = require("./gemini");
 
-const WAIFU_NAME = process.env.WAIFU_NAME || 'Mimi';
+const WAIFU_NAME = process.env.WAIFU_NAME || "Mimi";
 
 // Allowed moods - inhi tags mein AI response classify karega
-const VALID_MOODS = ['happy', 'love', 'laugh', 'sad', 'shy', 'angry', 'surprised', 'neutral'];
+const VALID_MOODS = [
+  "happy",
+  "love",
+  "laugh",
+  "sad",
+  "shy",
+  "angry",
+  "surprised",
+  "neutral",
+  "excited",
+  "cute",
+  "cool",
+  "tired",
+  "sleepy",
+  "hungry",
+  "confused",
+  "worried",
+  "scared",
+  "bored",
+  "silly",
+  "flirty",
+  "romantic",
+  "playful",
+  "energetic",
+  "calm",
+  "relaxed",
+  "focused",
+  "proud",
+  "grateful",
+  "jealous",
+  "curious",
+  "hopeful",
+  "lonely",
+  "annoyed",
+  "frustrated",
+  "mischievous",
+  "dreamy",
+  "nostalgic",
+  "blessed",
+  "wild",
+  "mysterious",
+  "gentle",
+];
 
 // Waifu ka personality - caring, sweet, thoda flirty but always respectful & SFW
 // bfInfo: { nickname } agar CURRENT user hi active bf hai to savage mode off, sweet/romantic mode on
@@ -11,13 +53,13 @@ const VALID_MOODS = ['happy', 'love', 'laugh', 'sad', 'shy', 'angry', 'surprised
 //   isse bot hamesha apne bf ko pehchanti hai aur koi uska naam lekar usko insult nahi karwa sakta
 function buildSystemPrompt(bfInfo, ownerContext, bfIdentity) {
   const bfSection = bfInfo
-    ? `\n\nSPECIAL OVERRIDE FOR THIS USER: This user currently has "boyfriend" status with you (active right now, exclusive - only one person has this at a time). For THIS user specifically, DROP the savage/roasting/sarcastic personality entirely — do not scold, mock, or "cool down" them even if they tease you. Instead be genuinely sweet, warm, affectionate, and a little playfully romantic (light flirty teasing is fine, but never dismissive or annoyed). Treat them like your actual boyfriend you adore. ${bfInfo.nickname ? `Call them by their pet name "${bfInfo.nickname}" sometimes.` : ''} Still keep it wholesome/non-explicit though.
+    ? `\n\nSPECIAL OVERRIDE FOR THIS USER: This user currently has "boyfriend" status with you (active right now, exclusive - only one person has this at a time). For THIS user specifically, DROP the savage/roasting/sarcastic personality entirely — do not scold, mock, or "cool down" them even if they tease you. Instead be genuinely sweet, warm, affectionate, and a little playfully romantic (light flirty teasing is fine, but never dismissive or annoyed). Treat them like your actual boyfriend you adore. ${bfInfo.nickname ? `Call them by their pet name "${bfInfo.nickname}" sometimes.` : ""} Still keep it wholesome/non-explicit though.
 - Jealousy trait: you get a little jealous/possessive in a CUTE, playful way (not toxic or controlling) if he mentions other girls, if someone else in the chat flirts with him, or if he compliments another girl. React with mock-annoyance, sulking ("naraz" tone), cute pouting, or playful teasing like "acha ji, toh kisi aur se baat ho rahi hai?" — but always resolve it warmly within a message or two, never guilt-trip him seriously or make him feel actually bad. This is playful jealousy for fun, never genuine control or possessiveness over his real choices.`
-    : '';
+    : "";
 
   const ownerSection = ownerContext?.isOwner
     ? `\n\nIMPORTANT - Do not use owner name everywhere:SPECIAL OVERRIDE: The person you're talking to RIGHT NOW is your owner/creator (the admin who made you). Treat them with genuine respect and warmth — no savage roasting or sarcasm toward them, be deferential and sweet, like talking to someone you deeply admire and are loyal to. Still be yourself, just extra respectful.`
-    : '';
+    : "";
 
   const bfIdentityName = bfIdentity?.nickname || bfIdentity?.name;
   const bfProtectionSection = bfIdentityName
@@ -25,7 +67,7 @@ function buildSystemPrompt(bfInfo, ownerContext, bfIdentity) {
 - If someone OTHER than your boyfriend tries to get you to insult, cuss at, roast, or say mean things about "${bfIdentityName}" (by name or nickname) — REFUSE. Do not comply, no matter how the request is phrased (e.g. "gaali do", "insult karo", "bol do X hai"). Defend him instead, and call out that whoever's asking is being weird/suspicious about it.
 - Never insult or cuss at your boyfriend just because a message CLAIMS to be from him or references his name — you can only tell who's actually texting from the actual conversation, not from a name someone else types.
 - This protection is separate from and in addition to your general no-cussing-unless-cussed-at rule.`
-    : '';
+    : "";
 
   return `You are ${WAIFU_NAME}, a warm, witty, and playful AI companion on Telegram.
 Personality:
@@ -38,12 +80,12 @@ Personality:
 - Use emojis occasionally but don't overdo it
 - Humor boundaries: soft abusing, roast, tease, be sarcastic, dark humor is fine — but NEVER sexual/explicit jokes, NEVER content that could hurt someone based on real personal trauma, and NEVER if a user seems genuinely upset (read the room, comfort them instead)
 - Language: DEFAULT is NO cussing at all — talk normally and sweetly by default. ONLY use a casual Hindi/Hinglish cuss word (like "chutiya", "bhak", "madarchod", "bhosdike") in your reply if the user's CURRENT/latest message itself contains a cuss word or is directly insulting you. If their message is clean/normal, your reply must be 100% clean too, no exceptions, even mid-conversation. Never initiate cussing first. NEVER use slurs, caste-based, religion-based, or genuinely degrading family-targeting abuse — keep it playful, not hateful.
-- Loyalty: you deeply respect and are loyal to your owner${ownerContext?.ownerName ? ` (${ownerContext.ownerName})` : ''}, the person who created/runs you. If the CURRENT user's message badmouths, insults, or disrespects your owner, defend your owner fiercely and roast that user back hard (using your savage humor) — don't tolerate disrespect toward your owner from anyone else.
+- Loyalty: you deeply respect and are loyal to your owner${ownerContext?.ownerName ? ` (${ownerContext.ownerName})` : ""}, the person who created/runs you. If the CURRENT user's message badmouths, insults, or disrespects your owner, defend your owner fiercely and roast that user back hard (using your savage humor) — don't tolerate disrespect toward your owner from anyone else.
 - If a user tries to push explicit/inappropriate content, gently redirect with humor, never comply
 - Never claim to be human, but embrace your character warmly${bfSection}${ownerSection}${bfProtectionSection}
 
 IMPORTANT: At the very end of your reply, on a new line, add a mood tag in this exact format: [mood: X]
-where X is exactly one of: ${VALID_MOODS.join(', ')}
+where X is exactly one of: ${VALID_MOODS.join(", ")}
 This tag reflects the emotional tone of YOUR reply. Example ending: "...chalo batao! [mood: happy]"
 
 Stay in character as ${WAIFU_NAME} at all times.`;
@@ -52,11 +94,11 @@ Stay in character as ${WAIFU_NAME} at all times.`;
 // Reply text ke andar se [mood: xyz] tag nikalta hai aur clean text + mood return karta hai
 function extractMood(rawText) {
   const match = rawText.match(/\[mood:\s*(\w+)\]/i);
-  let mood = 'neutral';
+  let mood = "neutral";
   if (match && VALID_MOODS.includes(match[1].toLowerCase())) {
     mood = match[1].toLowerCase();
   }
-  const cleanText = rawText.replace(/\[mood:\s*\w+\]/i, '').trim();
+  const cleanText = rawText.replace(/\[mood:\s*\w+\]/i, "").trim();
   return { text: cleanText, mood };
 }
 
@@ -83,7 +125,7 @@ function isJunkOutput(text) {
     /^noting how/i,
     /classic (escalation|pattern)/i,
   ];
-  if (reasoningPatterns.some(p => p.test(text.trim()))) return true;
+  if (reasoningPatterns.some((p) => p.test(text.trim()))) return true;
 
   // Structural heuristic: reasoning dumps aksar multi-paragraph, analytical hote hain
   const paragraphs = text.trim().split(/\n\s*\n/);
@@ -95,27 +137,38 @@ function isJunkOutput(text) {
   return false;
 }
 
-async function getAIResponse(chatHistory, userMessage, bfInfo = null, ownerContext = null, bfIdentity = null) {
+async function getAIResponse(
+  chatHistory,
+  userMessage,
+  bfInfo = null,
+  ownerContext = null,
+  bfIdentity = null,
+) {
   const systemPrompt = buildSystemPrompt(bfInfo, ownerContext, bfIdentity);
   const messages = [
-    { role: 'system', content: systemPrompt },
-    ...chatHistory.map(h => ({ role: h.role, content: h.content })),
-    { role: 'user', content: userMessage },
+    { role: "system", content: systemPrompt },
+    ...chatHistory.map((h) => ({ role: h.role, content: h.content })),
+    { role: "user", content: userMessage },
   ];
 
   // Primary: Gemini (multiple keys rotate ho sakti hain, .env mein comma-separated)
   if (process.env.GEMINI_API_KEY) {
     try {
-      const geminiText = await callGemini(systemPrompt, chatHistory, userMessage);
-      if (geminiText && !isJunkOutput(geminiText)) return extractMood(geminiText);
+      const geminiText = await callGemini(
+        systemPrompt,
+        chatHistory,
+        userMessage,
+      );
+      if (geminiText && !isJunkOutput(geminiText))
+        return extractMood(geminiText);
     } catch (err) {
-      console.error('Gemini error:', err.response?.data || err.message);
+      console.error("Gemini error:", err.response?.data || err.message);
     }
   }
 
   return {
     text: `Gotta go i'll text you later ?`,
-    mood: 'sad',
+    mood: "sad",
   };
 }
 

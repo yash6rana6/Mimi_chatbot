@@ -33,7 +33,7 @@ function checkWinner(board) {
   return null;
 }
 
-// Naya game start karta hai, ek player ke saath (dusra "Join" button se aayega)
+// Starts a new game with one player (the second joins via the "Join" button)
 function startGame(chatId, player1Id, player1Name) {
   games.set(String(chatId), {
     board: EMPTY_BOARD(),
@@ -46,7 +46,7 @@ function startGame(chatId, player1Id, player1Name) {
 function joinGame(chatId, player2Id, player2Name) {
   const game = games.get(String(chatId));
   if (!game || game.players[1]) return null;
-  if (game.players[0] === player2Id) return null; // khud ke against nahi khel sakta
+  if (game.players[0] === player2Id) return null; // can't play against yourself
   game.players[1] = player2Id;
   game.names[player2Id] = player2Name;
   return game;
@@ -56,7 +56,7 @@ function getGame(chatId) {
   return games.get(String(chatId)) || null;
 }
 
-// Move karta hai, return karta hai: { success, winner, board } ya { success: false, reason }
+// Makes a move, returns: { success, winner, board } or { success: false, reason }
 function makeMove(chatId, playerId, cellIndex) {
   const game = games.get(String(chatId));
   if (!game) return { success: false, reason: 'no_game' };

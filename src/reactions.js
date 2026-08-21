@@ -1,5 +1,5 @@
-// Telegram sirf ek FIXED list of emojis allow karta hai message reactions ke liye
-// (harek emoji allowed nahi hai - sirf Telegram ki official reaction list use kar sakte hain)
+// Telegram only allows a FIXED list of emojis for message reactions
+// (not every emoji is allowed - only Telegram's official reaction list works)
 const KEYWORD_REACTIONS = [
   { emoji: '🤣', patterns: [/\bha+ha+\b/i, /\blo+l\b/i, /😂/, /🤣/, /funny/i, /majaak/i] },
   { emoji: '❤', patterns: [/love/i, /pyaar/i, /pyar/i, /❤/, /😍/] },
@@ -10,7 +10,7 @@ const KEYWORD_REACTIONS = [
   { emoji: '😱', patterns: [/wow/i, /omg/i, /kya baat/i, /shocking/i] },
 ];
 
-// Mood -> reaction emoji (sirf Telegram ki allowed reaction list mein se)
+// Mood -> reaction emoji (only from Telegram's allowed reaction list)
 const MOOD_TO_EMOJI = {
   happy: '😁',
   love: '❤',
@@ -22,7 +22,7 @@ const MOOD_TO_EMOJI = {
   neutral: '👍',
 };
 
-// User ke message ka content dekh ke koi matching reaction emoji dhundta hai (null agar kuch match na ho)
+// Looks at the content of the user's message and finds a matching reaction emoji (null if nothing matches)
 function pickReactionForText(text) {
   if (!text) return null;
   for (const rule of KEYWORD_REACTIONS) {
@@ -31,7 +31,7 @@ function pickReactionForText(text) {
   return null;
 }
 
-// Telegram Bot API ka setMessageReaction call karta hai
+// Calls the Telegram Bot API's setMessageReaction
 async function reactToMessage(ctx, emoji) {
   if (!emoji) return;
   try {
@@ -41,8 +41,8 @@ async function reactToMessage(ctx, emoji) {
       reaction: [{ type: 'emoji', emoji }],
     });
   } catch (err) {
-    // Reactions fail hona critical nahi hai, chat flow ko block nahi karna.
-    // REACTION_INVALID ka matlab wo emoji Telegram ki allowed list mein nahi hai - silently skip.
+    // A failed reaction isn't critical, don't block the chat flow.
+    // REACTION_INVALID means that emoji isn't in Telegram's allowed list - skip silently.
     if (!err.message?.includes('REACTION_INVALID')) {
       console.error('Reaction error:', err.message);
     }

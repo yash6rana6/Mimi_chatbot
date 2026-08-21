@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
-const { User, ChatHistory, GroupMessage, Sticker, Admin, Score, GroupMember } = require('./models');
+const { User, ChatHistory, GroupMessage, Sticker, Admin, Score, GroupMember, Feedback, DailyActivity, MatchPool } = require('./models');
 const { getAIResponse, WAIFU_NAME, VALID_MOODS } = require('./ai');
 const { pickReactionForText, reactToMessage, MOOD_TO_EMOJI } = require('./reactions');
 const { getActiveBF, getActiveBFIdentity, setBFByAdmin } = require('./bf');
@@ -9,10 +9,11 @@ const { BF } = require('./models');
 const { startScheduler } = require('./scheduler');
 const { generateVoiceNote } = require('./voice');
 const games = require('./games');
+const extras = require('./extras');
 const ttt = require('./ttt');
 
-// Prevents "message is not modified" error when two people double-click the same button
-// or content is the same - prevents crashing
+// Suppresses the Telegram "message is not modified" error that happens when two people
+// double-click the same button or the content is identical - prevents a crash
 async function safeEditMessageText(ctx, text, extra) {
   try {
     await ctx.editMessageText(text, extra);
@@ -67,8 +68,8 @@ async function getOrCreateUser(ctx) {
   return user;
 }
 
-// Admin daily limit check is skipped
-// Checks .env ADMIN_IDS (owner admins) + dynamically added admins from DB
+// Skips the daily limit check for admins
+// Checks both .env's ADMIN_IDS (owner admins) + admins added dynamically in the DB
 async function isAdmin(ctx) {
   const userId = String(ctx.from.id);
   if (ADMIN_IDS.includes(userId)) return true;
@@ -76,12 +77,12 @@ async function isAdmin(ctx) {
   return !!found;
 }
 
-// Only .env "owner" admins can add/remove new admins (top-level control)
+// Only the .env "owner" admins can add/remove new admins (top-level control)
 function isOwnerAdmin(ctx) {
   return ADMIN_IDS.includes(String(ctx.from.id));
 }
 
-// Tracks group members - needed for /tagall
+// Tracks a group member - needed for /tagall
 async function trackGroupMember(ctx) {
   try {
     await GroupMember.findOneAndUpdate(
@@ -98,7 +99,7 @@ async function trackGroupMember(ctx) {
   }
 }
 
-// Adds score to a user in a chat (for games)
+// Adds score to a user in that chat (for games)
 async function addScore(chatId, telegramId, name, field, points = 10) {
   try {
     await Score.findOneAndUpdate(
@@ -111,7 +112,21 @@ async function addScore(chatId, telegramId, name, field, points = 10) {
   }
 }
 
-// ---------- Decide: whether to reply in group and for what reason ----------
+// Increments today's activity count - for "Member of the Day"
+async function trackDailyActivity(ctx) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    await DailyActivity.findOneAndUpdate(
+      { chatId: String(ctx.chat.id), telegramId: String(ctx.from.id), date: today },
+      { $inc: { count: 1 }, $set: { name: ctx.from.first_name || 'User' } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('trackDailyActivity error:', err.message);
+  }
+}
+
+// ---------- Decide: whether to reply in the group, and why ----------
 // Returns: { should: bool, reason: 'tagged' | 'name' | 'random' | null }
 function decideGroupReply(ctx) {
   const botUsername = ctx.botInfo.username;
@@ -127,14 +142,14 @@ function decideGroupReply(ctx) {
   const cooldownOk = Date.now() - (lastAutoReplyAt.get(chatId) || 0) > GROUP_AUTO_REPLY_COOLDOWN;
   if (!cooldownOk) return { should: false, reason: null };
 
-  // 2. Hear their name (without @) -> higher chance to jump in
+  // 2. Hears its own name (without @) -> higher chance to jump in
   const nameRegex = new RegExp(`\\b${WAIFU_NAME}\\b`, 'i');
   if (nameRegex.test(text)) {
     return { should: Math.random() < 0.7, reason: 'name' };
   }
 
-  // 3. Otherwise small random chance (to behave like a real group member)
-  // Skip very short/generic messages (like "ok", "yes") to avoid waste
+  // 3. Otherwise a small random chance (to behave like a real group member)
+  // Skip very short/generic messages (like "ok", "haan") to avoid wasting it
   if (text.trim().length < 8) return { should: false, reason: null };
 
   return { should: Math.random() < GROUP_AUTO_REPLY_CHANCE, reason: 'random' };
@@ -144,29 +159,33 @@ function decideGroupReply(ctx) {
 bot.start(async ctx => {
   await getOrCreateUser(ctx);
   await ctx.reply(
-    `Hi! I'm ${WAIFU_NAME} 🌸\n\nFeel free to chat with me in DMs, tag me in groups, or just say my name — I'm always listening 👀\n\nSo tell me, how's your day going?`
+    `Hiii! I'm ${WAIFU_NAME} 🌸\n\nChat freely in DM, tag me in groups or just say my name — I'm always listening 👀\n\nSo tell me, how's your day going?`
   );
 });
 
-// ---------- /help command ----------
-bot.help(async ctx => {
-  await ctx.reply(
-    `📖 How to use me:\n\n• Send me a direct message in DM\n• Tag @${ctx.botInfo.username} in groups, say my name, or reply to my message\n• Sometimes I jump into conversations on my own 😄\n• ${DAILY_LIMIT} free messages per day\n\n/reset - forget our chat history\n/mood - check my current mood\n/becomebf - get special BF status for 24h\n/nickname <name> - (BF only) set your pet name\n/voice <text> - hear me say it as a voice message\n\n🎮 Games:\n/games - view all games menu\n/truthordare - play Truth or Dare\n/wyr - Would You Rather\n/love <name1> and <name2> - Compatibility calculator\n/quiz - Trivia quiz\n/ttt - Tic-Tac-Toe (2 players)\n/leaderboard - top scorers in this group\n\n👑 Admin:\n/tagall <message> - mention everyone\n/broadcast <message> - (owner only) send to all groups+DMs`
-  );
-});
+// ---------- /help and /commands - full command list ----------
+const HELP_TEXT = `📖 How to use me:\n\n• Message me directly in DM\n• In a group, tag @{USERNAME}, say my name, or reply to my message\n• Sometimes I jump into the conversation myself 😄\n• {LIMIT} free messages per day\n\n/reset - I'll forget our past chat\n/mood - ask me my current mood\n/becomebf - special bf status for 24h\n/nickname <name> - (bf only) set your pet name\n/voice <text> - hear it from me as a voice message\n\n🎮 Games:\n/games - menu of all games\n/truthordare - play Truth or Dare\n/wyr - Would You Rather\n/love <name1> and <name2> - compatibility calculator\n/quiz - trivia quiz\n/ttt - Tic-Tac-Toe (2 players)\n/leaderboard - this group's top scorers\n/matchme - matchmaker, find your match\n/feedback <msg> - send a suggestion/feedback\n/setbirthday DD-MM - set your birthday\n/qotd - Question of the Day\n/memberoftheday - today's top active member\n\n👑 Admin:\n/tagall <message> - mention everyone\n/broadcast <message/photo/video> - (owner only) send to all groups+DMs\n/groupcount - (owner only) how many groups I'm in\n/viewfeedback - (owner only) view recent feedback`;
+
+async function sendHelp(ctx) {
+  const text = HELP_TEXT.replace('{USERNAME}', ctx.botInfo.username).replace('{LIMIT}', DAILY_LIMIT);
+  await ctx.reply(text);
+}
+
+bot.help(sendHelp);
+bot.command('commands', sendHelp);
 
 // ---------- /reset command ----------
 bot.command('reset', async ctx => {
   const telegramId = String(ctx.from.id);
   await ChatHistory.deleteMany({ telegramId });
-  await ctx.reply(`Okay, I've forgotten everything 🌸 Let's start fresh!`);
+  await ctx.reply(`Okay, forgot everything 🌸 Let's start fresh!`);
 });
 
-// ---------- /setbf <telegram_id> [paid] (admin only) - BF status for 24h ----------
+// ---------- /setbf <telegram_id> [paid] (admin only) - 24h bf status ----------
 // Also works via reply. Adding "paid" at the end logs it as a payment source.
 bot.command('setbf', async ctx => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply('This command can only be used by admins 🙅‍♀️');
+    return ctx.reply('This command is admin-only 🙅‍♀️');
   }
 
   const parts = ctx.message.text.split(' ').slice(1).map(s => s.trim());
@@ -179,41 +198,41 @@ bot.command('setbf', async ctx => {
     targetName = ctx.message.reply_to_message.from.first_name || '';
   }
   if (!targetId || !/^\d+$/.test(targetId)) {
-    return ctx.reply('Reply to someone with /setbf (or /setbf paid for UPI payments), or use /setbf 123456789 [paid]');
+    return ctx.reply('Reply to someone with /setbf (or /setbf paid if they paid via UPI), or use /setbf 123456789 [paid]');
   }
 
-  // If name wasn't obtained from reply (manual ID), try to fetch from Telegram
+  // If the name wasn't found from the reply (ID was given manually), try fetching it from Telegram
   if (!targetName) {
     try {
       const chatInfo = await ctx.telegram.getChat(targetId);
       targetName = chatInfo.first_name || '';
     } catch (err) {
-      // If fetch fails, name stays blank
+      // If the fetch fails, no problem - name stays blank
     }
   }
 
   await setBFByAdmin(targetId, isPaid ? 'payment' : 'admin', targetName);
-  await ctx.reply(`💕 ID ${targetId}${targetName ? ` (${targetName})` : ''} is now BF for the next 24 hours!${isPaid ? ' (paid ✅)' : ''}`);
+  await ctx.reply(`💕 ID ${targetId}${targetName ? ` (${targetName})` : ''} is now bf for the next 24 hours!${isPaid ? ' (paid ✅)' : ''}`);
 });
 
-// ---------- /becomebf - guides users to DM admin, who manually verifies and activates ----------
+// ---------- /becomebf - shows the user the DM path, admin activates after manual verification ----------
 bot.command('becomebf', async ctx => {
   const adminUsername = process.env.ADMIN_CONTACT_USERNAME;
 
   if (!adminUsername) {
-    return ctx.reply('This feature isn\'t available right now, ask the admin to use /setbf 🙈');
+    return ctx.reply('This feature isn\'t available right now, ask the admin for /setbf 🙈');
   }
 
   await ctx.reply(
-    `💕 Want BF status for 24 hours?\n\n` +
-      `DM @${adminUsername} with your Telegram ID (${ctx.from.id}), and they'll guide you on how to activate it 🥰`
+    `💕 Want bf status for 24 hours?\n\n` +
+      `DM @${adminUsername} with your Telegram ID (${ctx.from.id}), they'll tell you how to activate it 🥰`
   );
 });
 
-// ---------- /removebf <telegram_id> (admin only) - remove BF status early ----------
+// ---------- /removebf <telegram_id> (admin only) - revoke bf status early ----------
 bot.command('removebf', async ctx => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply('This command can only be used by admins 🙅‍♀️');
+    return ctx.reply('This command is admin-only 🙅‍♀️');
   }
 
   let targetId = (ctx.message.text.split(' ')[1] || '').trim();
@@ -226,23 +245,19 @@ bot.command('removebf', async ctx => {
 
   const result = await BF.deleteOne({ telegramId: targetId });
   if (result.deletedCount) {
-    await ctx.reply(`💔 Removed BF status for ID ${targetId}.`);
+    await ctx.reply(`💔 Removed bf status from ID ${targetId}.`);
   } else {
-    await ctx.reply('This user is not currently a BF.');
+    await ctx.reply('They\'re not currently a bf.');
   }
 });
 
-// ---------- /voice <text> - anyone can hear any text in Mimi's voice ----------
+// ---------- /voice <text> - hear any text in Mimi's voice ----------
 bot.command('voice', async ctx => {
-  if (!isOwnerAdmin(ctx)) {
-    return ctx.reply('This command is restricted to bot owner only 🙅‍♀️');
-  }
-
   if (!VOICE_ENABLED) {
-    return ctx.reply('Voice feature is currently off');
+    return ctx.reply('Voice feature is off right now 🙈');
   }
   const text = ctx.message.text.split(' ').slice(1).join(' ').trim();
-  if (!text) return ctx.reply('Give me some text too: /voice hi how are you');
+  if (!text) return ctx.reply('Give me some text too: /voice hii kaise ho tum');
 
   try {
     await ctx.sendChatAction('record_voice');
@@ -250,64 +265,230 @@ bot.command('voice', async ctx => {
     await ctx.replyWithVoice({ source: voiceBuffer });
   } catch (err) {
     console.error('Voice command error:', err.message);
-    await ctx.reply('Something went wrong creating the voice note 🥺 try again in a bit');
+    await ctx.reply('Had trouble generating the voice 🥺 try again in a bit');
   }
+});
+
+// ============ EXTRAS ============
+
+// ---------- /feedback <message> - submit a suggestion/feedback ----------
+bot.command('feedback', async ctx => {
+  const message = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  if (!message) return ctx.reply('What do you want to say? /feedback <message>');
+
+  await Feedback.create({
+    telegramId: String(ctx.from.id),
+    name: ctx.from.first_name || 'User',
+    message,
+  });
+  await ctx.reply('Thank you! Noted your feedback 💌');
+});
+
+// ---------- /viewfeedback (owner only) - view recent feedback ----------
+bot.command('viewfeedback', async ctx => {
+  if (!isOwnerAdmin(ctx)) {
+    return ctx.reply('This command is owner-only 👑');
+  }
+  const recent = await Feedback.find().sort({ createdAt: -1 }).limit(15).lean();
+  if (!recent.length) return ctx.reply('No feedback has come in yet.');
+
+  const lines = recent.map(f => `• ${f.name}: ${f.message}`).join('\n\n');
+  await ctx.reply(`💌 Recent Feedback:\n\n${lines}`);
+});
+
+// ---------- /setbirthday DD-MM - set your birthday ----------
+bot.command('setbirthday', async ctx => {
+  const input = (ctx.message.text.split(' ')[1] || '').trim();
+  const match = input.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (!match) return ctx.reply('Use the right format: /setbirthday DD-MM (e.g. /setbirthday 15-08)');
+
+  const day = parseInt(match[1]);
+  const month = parseInt(match[2]);
+  if (day < 1 || day > 31 || month < 1 || month > 12) {
+    return ctx.reply('That date doesn\'t look valid, try again.');
+  }
+
+  const birthday = `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  await User.findOneAndUpdate({ telegramId: String(ctx.from.id) }, { birthday }, { upsert: true });
+  await ctx.reply(`🎂 Set! I'll wish you that day 🎉`);
+});
+
+// ---------- /quote - a fresh AI-generated motivational/funny quote ----------
+bot.command('quote', async ctx => {
+  const quote = await extras.generateQuote();
+  await ctx.reply(`✨ ${quote}`);
+});
+
+// ---------- /qotd - Question of the Day, start a conversation ----------
+bot.command('qotd', async ctx => {
+  await ctx.reply(`💭 Question of the Day:\n\n${extras.getRandomQOTD()}`);
+});
+
+// ---------- /memberoftheday - today's most active member (group only) ----------
+bot.command('memberoftheday', async ctx => {
+  const isGroup = ['group', 'supergroup'].includes(ctx.chat.type);
+  if (!isGroup) return ctx.reply('This command only works in groups.');
+
+  const today = new Date().toISOString().split('T')[0];
+  const top = await DailyActivity.findOne({ chatId: String(ctx.chat.id), date: today })
+    .sort({ count: -1 })
+    .lean();
+
+  if (!top) return ctx.reply('No activity in this group yet today!');
+  await ctx.reply(`🌟 Today's Member of the Day: ${top.name}!\n${top.count} messages sent today 🔥`);
+});
+
+// ---------- /matchme - Matchmaker: join the waiting pool, show compatibility once matched ----------
+bot.command('matchme', async ctx => {
+  const isGroup = ['group', 'supergroup'].includes(ctx.chat.type);
+  if (!isGroup) return ctx.reply('This command only works in groups - for matching people up 😄');
+
+  const chatId = String(ctx.chat.id);
+  const telegramId = String(ctx.from.id);
+  const name = ctx.from.first_name || 'Someone';
+
+  const alreadyIn = await MatchPool.findOne({ chatId, telegramId });
+  if (alreadyIn) {
+    return ctx.reply('You\'re already in the waiting pool! Wait for someone else to run /matchme 💌');
+  }
+
+  // Is anyone else already waiting in this chat (besides yourself)?
+  const waitingPerson = await MatchPool.findOne({ chatId, telegramId: { $ne: telegramId } });
+
+  if (!waitingPerson) {
+    await MatchPool.create({ chatId, telegramId, name });
+    return ctx.reply(`💘 ${name} is looking for a match! Someone else run /matchme and you'll be paired up.`);
+  }
+
+  // Match found! Remove both from the pool and show compatibility
+  await MatchPool.deleteOne({ chatId, telegramId: waitingPerson.telegramId });
+  const { percent, message } = games.calculateLoveCompatibility(name, waitingPerson.name);
+  const bar = '💗'.repeat(Math.round(percent / 10)) + '🖤'.repeat(10 - Math.round(percent / 10));
+
+  await ctx.reply(
+    `🎉 Match found!\n\n💘 ${waitingPerson.name} + ${name}\n\n${bar}\n${percent}% match!\n\n${message}`
+  );
+});
+
+// ---------- /groupcount (owner only) - how many groups the bot is in ----------
+bot.command('groupcount', async ctx => {
+  if (!isOwnerAdmin(ctx)) {
+    return ctx.reply('This command is owner-only 👑');
+  }
+
+  const groupCount = (await GroupMember.distinct('chatId')).length;
+  const dmUserCount = (await User.distinct('telegramId')).length;
+
+  await ctx.reply(`📊 Stats:\n\n👥 Groups I'm in: ${groupCount}\n💬 Total known users: ${dmUserCount}`);
+});
+
+// ---------- /matchmaker - check compatibility between 2 random group members ----------
+bot.command('matchmaker', async ctx => {
+  const isGroup = ['group', 'supergroup'].includes(ctx.chat.type);
+  if (!isGroup) return ctx.reply('This command only works in groups.');
+
+  const members = await GroupMember.find({ chatId: String(ctx.chat.id) }).lean();
+  if (members.length < 2) {
+    return ctx.reply('Need at least 2 members for matchmaking! Wait for a few more people to be active.');
+  }
+
+  const shuffled = [...members].sort(() => Math.random() - 0.5);
+  const [p1, p2] = shuffled;
+  const { percent, message } = games.calculateLoveCompatibility(p1.firstName, p2.firstName);
+  const bar = '💗'.repeat(Math.round(percent / 10)) + '🖤'.repeat(10 - Math.round(percent / 10));
+
+  await ctx.reply(`💘 Today's Matchmaking!\n\n${p1.firstName} + ${p2.firstName}\n\n${bar}\n${percent}% match!\n\n${message}`);
 });
 
 // ============ GAMES ============
 
-// ---------- /broadcast <message> (owner only) - sends to all groups + DMs ----------
-bot.command('broadcast', async ctx => {
+// ---------- /broadcast (owner only) - sends text, photo, or video to all groups + DMs ----------
+// Usage: /broadcast <text>  OR  reply/attach a photo/video with /broadcast <optional caption>
+async function runBroadcast(ctx, caption, photo, video) {
   if (!isOwnerAdmin(ctx)) {
-    return ctx.reply('This command can only be used by the owner 👑');
+    return ctx.reply('This command is owner-only 👑');
   }
 
-  const message = ctx.message.text.split(' ').slice(1).join(' ').trim();
-  if (!message) return ctx.reply('Write a message too: /broadcast Hello everyone! 📢');
+  if (!caption && !photo && !video) {
+    return ctx.reply('Give a message too: /broadcast Hello everyone!\n\nOr send a photo/video with caption "/broadcast <text>", or reply to a photo/video with /broadcast.');
+  }
 
-  await ctx.reply('📢 Sending broadcast, this might take a moment...');
-
-  // All known groups (from GroupMember) + all known DM users (from User collection) - combine to unique list
+  // All known groups (from GroupMember) + all known DM users (from the User collection) - merged into a unique list
   const groupChatIds = await GroupMember.distinct('chatId');
   const userIds = await User.distinct('telegramId');
   const allTargets = [...new Set([...groupChatIds, ...userIds])];
+
+  await ctx.reply(`📢 Sending broadcast to ${allTargets.length} chats, this'll take a bit...`);
 
   let success = 0;
   let failed = 0;
 
   for (const chatId of allTargets) {
     try {
-      await bot.telegram.sendMessage(chatId, message);
+      if (photo) {
+        await bot.telegram.sendPhoto(chatId, photo, caption ? { caption } : undefined);
+      } else if (video) {
+        await bot.telegram.sendVideo(chatId, video, caption ? { caption } : undefined);
+      } else {
+        await bot.telegram.sendMessage(chatId, caption);
+      }
       success++;
     } catch (err) {
-      failed++; // bot blocked, chat deleted, or user never started DM - skip
+      failed++; // bot blocked, chat deleted, or the user never started a DM - skip
     }
-    await new Promise(resolve => setTimeout(resolve, 50)); // Avoid Telegram rate-limit
+    await new Promise(resolve => setTimeout(resolve, 50)); // to stay under Telegram's rate limit
   }
 
   await ctx.reply(`✅ Broadcast complete!\n\nSent: ${success}\nFailed: ${failed}`);
+}
+
+bot.command('broadcast', async ctx => {
+  const text = ctx.message.text.split(' ').slice(1).join(' ').trim();
+  // If the text command is a reply to a photo/video, use that
+  const replied = ctx.message.reply_to_message;
+  const photo = replied?.photo?.[replied.photo.length - 1]?.file_id;
+  const video = replied?.video?.file_id;
+  await runBroadcast(ctx, text, photo, video);
 });
 
-// ---------- /tagall - mention all known group members (admin only, spam-protection) ----------
+// Also works if /broadcast is written in a photo/video's caption
+// (Telegraf's bot.command() only checks message.text, not caption - so this needs separate handling)
+bot.on('photo', async ctx => {
+  const caption = ctx.message.caption || '';
+  if (!/^\/broadcast(\s|$)/i.test(caption)) return;
+  const text = caption.split(' ').slice(1).join(' ').trim();
+  const photo = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+  await runBroadcast(ctx, text, photo, null);
+});
+
+bot.on('video', async ctx => {
+  const caption = ctx.message.caption || '';
+  if (!/^\/broadcast(\s|$)/i.test(caption)) return;
+  const text = caption.split(' ').slice(1).join(' ').trim();
+  await runBroadcast(ctx, text, null, ctx.message.video.file_id);
+});
+
+// ---------- /tagall - mention all known members of the group (admin only, spam-protection) ----------
+
 bot.command('tagall', async ctx => {
   const isGroup = ['group', 'supergroup'].includes(ctx.chat.type);
   if (!isGroup) return ctx.reply('This command only works in groups.');
 
   if (!(await isAdmin(ctx))) {
-    return ctx.reply('This command can only be used by admins 🙅‍♀️ (to prevent spam)');
+    return ctx.reply('This command is admin-only 🙅‍♀️ (to prevent spam)');
   }
 
   const chatId = String(ctx.chat.id);
   const members = await GroupMember.find({ chatId }).lean();
 
   if (!members.length) {
-    return ctx.reply('No members tracked yet. They\'ll appear here once they send messages.');
+    return ctx.reply("No members tracked yet. They'll show up here once they send a message.");
   }
 
   const customMsg = ctx.message.text.split(' ').slice(1).join(' ').trim();
-  const header = customMsg ? `📢 ${customMsg}\n\n` : '📢 Mentioning everyone:\n\n';
+  const header = customMsg ? `📢 ${customMsg}\n\n` : '📢 Tagging everyone:\n\n';
 
-  // Send in batches to avoid Telegram message limits (10 mentions per message)
+  // Send in batches to stay under Telegram's message limit (10 mentions per message)
   const BATCH_SIZE = 10;
   for (let i = 0; i < members.length; i += BATCH_SIZE) {
     const batch = members.slice(i, i + BATCH_SIZE);
@@ -336,9 +517,9 @@ bot.command('leaderboard', async ctx => {
   await ctx.reply(`🏆 Leaderboard:\n\n${lines.join('\n')}`);
 });
 
-// ---------- /games - all games in one place, launch with buttons ----------
+// ---------- /games - all games in one place, launch via buttons ----------
 bot.command('games', async ctx => {
-  await ctx.reply('🎮 Games Menu - what would you like to play?', {
+  await ctx.reply('🎮 Games Menu - what do you want to play?', {
     reply_markup: {
       inline_keyboard: [
         [{ text: '🤔🔥 Truth or Dare', callback_data: 'menu:truthordare' }],
@@ -356,7 +537,7 @@ bot.action(/^menu:(.+)$/, async ctx => {
   await ctx.answerCbQuery();
 
   if (game === 'love') {
-    return ctx.reply('💘 Use: /love name1 and name2\n\nExample: /love Yash and Priya');
+    return ctx.reply('💘 Use it like: /love name1 and name2\n\nExample: /love Yash and Priya');
   }
 
   if (game === 'truthordare') {
@@ -391,11 +572,11 @@ bot.action(/^menu:(.+)$/, async ctx => {
   if (game === 'ttt') {
     const chatId = ctx.chat.id;
     if (ttt.getGame(chatId)) {
-      return ctx.reply('A game is already running in this chat! Finish it first.');
+      return ctx.reply('A game is already running in this chat! Finish that one first.');
     }
     ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
     return ctx.reply(
-      `❌⭕ Tic-Tac-Toe started! ${ctx.from.first_name} has challenged you.\n\nAnother player should click "Join Game"!`,
+      `❌⭕ Tic-Tac-Toe started! ${ctx.from.first_name} issued a challenge.\n\nAny other player, hit "Join"!`,
       { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
     );
   }
@@ -411,7 +592,7 @@ bot.command('dare', async ctx => {
   await ctx.reply(`🔥 Dare: ${games.getRandomDare()}`);
 });
 
-// ---------- /truthordare - choose with buttons ----------
+// ---------- /truthordare - choose via buttons ----------
 bot.command('truthordare', async ctx => {
   await ctx.reply('Truth or Dare? 😏', {
     reply_markup: {
@@ -447,17 +628,17 @@ bot.command('wyr', async ctx => {
 bot.action(/^wyr:(a|b)$/, async ctx => {
   const choice = ctx.match[1].toUpperCase();
   await ctx.answerCbQuery(`You chose ${choice}! 😄`);
-  await ctx.reply(`Nice choice! ${choice === 'A' ? '🅰️' : '🅱️'} Want to play again? /wyr`);
+  await ctx.reply(`Nice choice! ${choice === 'A' ? '🅰️' : '🅱️'} Want to play another? /wyr`);
 });
 
 // ---------- /love <name1> <name2> - Compatibility Calculator ----------
 bot.command('love', async ctx => {
-  const parts = ctx.message.text.split(' ').slice(1).join(' ').split(/\s+and\s+|\s*&\s*|\s*,\s*/i);
+  const parts = ctx.message.text.split(' ').slice(1).join(' ').split(/\s+aur\s+|\s*&\s*|\s*,\s*/i);
   let name1 = (parts[0] || '').trim();
   let name2 = (parts[1] || '').trim();
 
   if (!name1 || !name2) {
-    return ctx.reply('Give me two names: /love Yash and Priya');
+    return ctx.reply('Give two names: /love Yash and Priya');
   }
 
   const { percent, message } = games.calculateLoveCompatibility(name1, name2);
@@ -479,12 +660,12 @@ bot.action(/^quiz:(\d):(\d)$/, async ctx => {
   const chosen = parseInt(ctx.match[1]);
   const correct = parseInt(ctx.match[2]);
   if (chosen === correct) {
-    await ctx.answerCbQuery('✅ Correct!');
-    await safeEditMessageText(ctx, `✅ That was correct! You're so smart 🧠\nWant to play again? /quiz`);
+    await ctx.answerCbQuery('✅ Correct answer!');
+    await safeEditMessageText(ctx, `✅ That was correct! Really smart 🧠\nWant to play another? /quiz`);
     await addScore(ctx.chat.id, ctx.from.id, ctx.from.first_name || 'Player', 'quizWins', 10);
   } else {
     await ctx.answerCbQuery('❌ Wrong!');
-    await safeEditMessageText(ctx, `❌ That was wrong, no worries! Try again with /quiz`);
+    await safeEditMessageText(ctx, `❌ That was wrong, no worries! Try again /quiz`);
   }
 });
 
@@ -493,12 +674,12 @@ bot.command('ttt', async ctx => {
   const chatId = ctx.chat.id;
   const existing = ttt.getGame(chatId);
   if (existing) {
-    return ctx.reply('A game is already running in this chat! Finish it first.');
+    return ctx.reply('A game is already running in this chat! Finish that one first.');
   }
 
   ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
   await ctx.reply(
-    `❌⭕ Tic-Tac-Toe started! ${ctx.from.first_name} has challenged you.\n\nAnother player should click "Join Game"!`,
+    `❌⭕ Tic-Tac-Toe shuru! ${ctx.from.first_name} ne challenge kiya hai.\n\nKoi doosra khilaadi "Join" dabao!`,
     { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
   );
 });
@@ -507,14 +688,14 @@ bot.action(/^ttt_join:(-?\d+)$/, async ctx => {
   const chatId = ctx.match[1];
   const game = ttt.joinGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 2');
   if (!game) {
-    return ctx.answerCbQuery('Cannot join this game (already full or it\'s your own game)', { show_alert: true });
+    return ctx.answerCbQuery('Can\'t join this game (already full or it\'s your own game)', { show_alert: true });
   }
 
   await ctx.answerCbQuery('Joined the game!');
   const p1Name = game.names[game.players[0]];
   const p2Name = game.names[game.players[1]];
   await safeEditMessageText(ctx, 
-    `❌ ${p1Name} vs ⭕ ${p2Name}\n\nIt's ${p1Name}'s turn (❌)`,
+    `❌ ${p1Name} vs ⭕ ${p2Name}\n\nCurrent turn: ${p1Name} (❌)`,
     { reply_markup: ttt.buildKeyboard(chatId, game.board) }
   );
 });
@@ -527,9 +708,9 @@ bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
   if (!result.success) {
     const messages = {
       no_game: 'This game has already ended.',
-      waiting_for_player: 'Waiting for the second player!',
+      waiting_for_player: 'Still waiting for the other player!',
       not_your_turn: 'It\'s not your turn!',
-      cell_taken: 'This cell is already filled!',
+      cell_taken: 'That cell is already filled!',
     };
     return ctx.answerCbQuery(messages[result.reason] || 'Invalid move', { show_alert: true });
   }
@@ -541,13 +722,13 @@ bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
   const p2Name = game?.names?.[game.players[1]] || 'Player 2';
 
   if (winner === 'draw') {
-    await safeEditMessageText(ctx, `🤝 Match drawn! Well played both.`, {
+    await safeEditMessageText(ctx, `🤝 The match ended in a draw! Well played both of you.`, {
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
   } else if (winner) {
     const winnerId = winner === 'X' ? game.players[0] : game.players[1];
     const winnerName = winner === 'X' ? p1Name : p2Name;
-    await safeEditMessageText(ctx, `🎉 ${winnerName} (${winner === 'X' ? '❌' : '⭕'}) wins!`, {
+    await safeEditMessageText(ctx, `🎉 ${winnerName} (${winner === 'X' ? '❌' : '⭕'}) won!`, {
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
     await addScore(chatId, winnerId, winnerName, 'tttWins', 15);
@@ -555,20 +736,20 @@ bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
     const currentGame = ttt.getGame(chatId);
     const turnName = currentGame.names[currentGame.turn];
     const turnSymbol = currentGame.turn === currentGame.players[0] ? '❌' : '⭕';
-    await safeEditMessageText(ctx, `❌ ${p1Name} vs ⭕ ${p2Name}\n\nIt's ${turnName}'s turn (${turnSymbol})`, {
+    await safeEditMessageText(ctx, `❌ ${p1Name} vs ⭕ ${p2Name}\n\nCurrent turn: ${turnName} (${turnSymbol})`, {
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
   }
 });
 
-// ---------- /nickname <name> - only active BF can set their pet name ----------
+// ---------- /nickname <name> - only the active bf can set their pet name ----------
 bot.command('nickname', async ctx => {
   const telegramId = String(ctx.from.id);
   const bf = await getActiveBF(telegramId);
-  if (!bf) return ctx.reply('This feature is only for my BF 🙈 Become a BF first!');
+  if (!bf) return ctx.reply('This feature is only for my bf 🙈 Become bf first!');
 
   const nickname = ctx.message.text.split(' ').slice(1).join(' ').trim();
-  if (!nickname) return ctx.reply('Give me a nickname too: /nickname cutie');
+  if (!nickname) return ctx.reply('Give a nickname too: /nickname jaanu');
 
   await BF.updateOne({ telegramId }, { nickname });
   await ctx.reply(`Okay ${nickname}! I'll call you that from now on 🥰`);
@@ -576,12 +757,44 @@ bot.command('nickname', async ctx => {
 
 // ---------- /mood - bot tells its current mood ----------
 const MOOD_LINES = [
-  { mood: 'happy', text: '😁 I\'m in a great mood right now, let\'s have some fun!' },
+  { mood: 'happy', text: '😁 I am in a great mood right now, let us have some fun!' },
   { mood: 'love', text: '🥰 Feeling a bit romantic today, was thinking of you' },
   { mood: 'laugh', text: '😂 In a playful mood, tell me a joke!' },
   { mood: 'sad', text: '🥺 Feeling a little low, talk to me' },
   { mood: 'shy', text: '🥰 Feeling shy today for some reason' },
   { mood: 'neutral', text: '😌 Chill mood, just waiting for your messages' },
+  { mood: 'excited', text: '🤩 Super excited! Something good is about to happen!' },
+  { mood: 'cute', text: '🥰 Feeling adorable today, don\'t you think?' },
+  { mood: 'cool', text: '😎 Just chilling, being awesome as always' },
+  { mood: 'tired', text: '😫 So tired... but still here for you!' },
+  { mood: 'sleepy', text: '😴 Getting sleepy... maybe we should talk tomorrow' },
+  { mood: 'hungry', text: '🍕 Hungry! Feed me compliments or food!' },
+  { mood: 'confused', text: '😕 Confused about everything right now' },
+  { mood: 'worried', text: '😟 A little worried, hold me?' },
+  { mood: 'scared', text: '😨 Scared! Protect me!' },
+  { mood: 'bored', text: '😑 Bored... entertain me please!' },
+  { mood: 'silly', text: '🤪 Feeling goofy and silly today!' },
+  { mood: 'flirty', text: '😏 Feeling flirty... watch out!' },
+  { mood: 'playful', text: '😜 In a playful mood, want to play?' },
+  { mood: 'energetic', text: '⚡ Full of energy! Let\'s do something!' },
+  { mood: 'calm', text: '😌 Peaceful and calm today' },
+  { mood: 'relaxed', text: '🧘 Relaxed and zen mode on' },
+  { mood: 'focused', text: '🎯 Focused on you right now' },
+  { mood: 'proud', text: '😤 Feeling proud of myself today!' },
+  { mood: 'grateful', text: '🙏 Grateful for you being here' },
+  { mood: 'jealous', text: '😒 Feeling a little jealous... whose attention do you have?' },
+  { mood: 'curious', text: '🤔 Curious about what you\'re thinking' },
+  { mood: 'hopeful', text: '🌟 Hopeful for a beautiful day' },
+  { mood: 'lonely', text: '🥺 Feeling lonely, talk to me please' },
+  { mood: 'annoyed', text: '😒 Annoyed at something... tell me I\'m cute' },
+  { mood: 'frustrated', text: '😤 Frustrated! Need a hug' },
+  { mood: 'mischievous', text: '😈 Feeling mischievous... wanna cause trouble?' },
+  { mood: 'dreamy', text: '💭 Daydreaming about you' },
+  { mood: 'nostalgic', text: '🥹 Remembering good times... let\'s make more memories' },
+  { mood: 'blessed', text: '✨ Feeling blessed to have you in my life' },
+  { mood: 'wild', text: '🤘 Feeling wild and free today!' },
+  { mood: 'mysterious', text: '🔮 Mysterious mood... try to figure me out' },
+  { mood: 'gentle', text: '🕊️ Feeling gentle and soft today' }
 ];
 bot.command('mood', async ctx => {
   const pick = MOOD_LINES[Math.floor(Math.random() * MOOD_LINES.length)];
@@ -591,16 +804,16 @@ bot.command('mood', async ctx => {
 // ---------- /addadmin <telegram_id> (owner only) ----------
 bot.command('addadmin', async ctx => {
   if (!isOwnerAdmin(ctx)) {
-    return ctx.reply('This command can only be used by the owner 👑');
+    return ctx.reply('This command is owner-only 👑');
   }
 
   const targetId = (ctx.message.text.split(' ')[1] || '').trim();
   if (!targetId || !/^\d+$/.test(targetId)) {
-    return ctx.reply('Give a valid ID: /addadmin 123456789\n\nTo find their ID, ask the user to check with @userinfobot.');
+    return ctx.reply('Give a valid ID: /addadmin 123456789\n\nTo find someone\'s ID, ask them to check @userinfobot.');
   }
 
   const already = ADMIN_IDS.includes(targetId) || (await Admin.findOne({ telegramId: targetId }));
-  if (already) return ctx.reply('This user is already an admin.');
+  if (already) return ctx.reply('They\'re already an admin.');
 
   await Admin.create({ telegramId: targetId, addedBy: String(ctx.from.id) });
   await ctx.reply(`✅ Made ID ${targetId} an admin!`);
@@ -609,28 +822,28 @@ bot.command('addadmin', async ctx => {
 // ---------- /removeadmin <telegram_id> (owner only) ----------
 bot.command('removeadmin', async ctx => {
   if (!isOwnerAdmin(ctx)) {
-    return ctx.reply('This command can only be used by the owner 👑');
+    return ctx.reply('This command is owner-only 👑');
   }
 
   const targetId = (ctx.message.text.split(' ')[1] || '').trim();
   if (!targetId) return ctx.reply('Give a valid ID: /removeadmin 123456789');
 
   if (ADMIN_IDS.includes(targetId)) {
-    return ctx.reply('This is an owner admin (set in .env), cannot be removed via bot - you\'ll need to remove from .env.');
+    return ctx.reply('That\'s an owner admin (set in .env), can\'t be removed from the bot - has to be removed from .env directly.');
   }
 
   const result = await Admin.deleteOne({ telegramId: targetId });
   if (result.deletedCount) {
-    await ctx.reply(`✅ Removed ID ${targetId} from admin list.`);
+    await ctx.reply(`✅ Removed ID ${targetId} from admins.`);
   } else {
-    await ctx.reply('Not found in admin list.');
+    await ctx.reply('Couldn\'t find them in the admin list.');
   }
 });
 
 // ---------- /listadmins ----------
 bot.command('listadmins', async ctx => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply('This command can only be used by admins 🙅‍♀️');
+    return ctx.reply('This command is admin-only 🙅‍♀️');
   }
   const dbAdmins = await Admin.find().lean();
   const lines = [
@@ -643,7 +856,7 @@ bot.command('listadmins', async ctx => {
 // ---------- /addsticker <mood> (admin only, reply to a sticker) ----------
 bot.command('addsticker', async ctx => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply('This command can only be used by admins 🙅‍♀️');
+    return ctx.reply('This command is admin-only 🙅‍♀️');
   }
 
   const replied = ctx.message.reply_to_message;
@@ -653,11 +866,51 @@ bot.command('addsticker', async ctx => {
 
   const mood = (ctx.message.text.split(' ')[1] || '').toLowerCase();
   if (!VALID_MOODS.includes(mood)) {
-    return ctx.reply('Valid moods: ' + VALID_MOODS.join(', '));
+    return ctx.reply('Give a valid mood: ' + VALID_MOODS.join(', '));
   }
 
   await Sticker.create({ mood, fileId: replied.sticker.file_id, addedBy: String(ctx.from.id) });
-  await ctx.reply(`✅ Sticker saved under "${mood}" category!`);
+  await ctx.reply(`✅ Sticker saved in the "${mood}" category!`);
+});
+
+// ---------- /removesticker (admin only, reply to a sticker) ----------
+bot.command('removesticker', async ctx => {
+  // Check admin status
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply('⚠️ This command is admin-only 🙅‍♀️');
+  }
+
+  // Check if replying to a sticker
+  const replied = ctx.message.reply_to_message;
+  if (!replied) {
+    return ctx.reply('📌 Reply to a sticker with /removesticker to remove it from my database.');
+  }
+  
+  if (!replied.sticker) {
+    return ctx.reply('❌ Please reply to a sticker, not a text message.');
+  }
+
+  const fileId = replied.sticker.file_id;
+  
+  try {
+    // Check if sticker exists in database
+    const existing = await Sticker.findOne({ fileId });
+    if (!existing) {
+      return ctx.reply('❌ This sticker is not in my database. Use /addsticker to add it first.');
+    }
+
+    // Delete the sticker
+    const result = await Sticker.deleteOne({ fileId });
+    
+    if (result.deletedCount) {
+      await ctx.reply(`✅ Sticker removed from the "${existing.mood}" category!`);
+    } else {
+      await ctx.reply('❌ Something went wrong. Could not delete the sticker.');
+    }
+  } catch (err) {
+    console.error('Remove sticker error:', err);
+    await ctx.reply('❌ An error occurred while removing the sticker.');
+  }
 });
 
 // ---------- /stickers (list counts) ----------
@@ -668,7 +921,7 @@ bot.command('stickers', async ctx => {
   await ctx.reply(`🎀 Saved stickers:\n${lines}`);
 });
 
-// ---------- Helper: send random sticker based on mood ----------
+// ---------- Helper: send a random sticker based on mood ----------
 async function maybeSendMoodSticker(ctx, mood) {
   if (Math.random() > 0.4) return;
 
@@ -702,15 +955,16 @@ bot.on('text', async ctx => {
       const chatId = String(ctx.chat.id);
       const rawText = ctx.message.text || '';
 
-      // Save every group message to buffer, whether bot replies or not (for context)
+      // Save every group message to the buffer, whether the bot replies or not (for context)
       await GroupMessage.create({
         chatId,
         username: ctx.from.first_name || ctx.from.username || 'Someone',
         content: rawText,
       });
 
-      // Track member for /tagall (in background, doesn't block)
+      // Track the member for /tagall (in the background, non-blocking)
       trackGroupMember(ctx);
+      trackDailyActivity(ctx);
 
       const decision = decideGroupReply(ctx);
       if (!decision.should) return;
@@ -721,7 +975,7 @@ bot.on('text', async ctx => {
 
     if (user.messageCount >= DAILY_LIMIT && !(await isAdmin(ctx))) {
       await ctx.reply(
-        `We've hit our ${DAILY_LIMIT} messages for today 🥺 Let's talk again tomorrow, promise!` +
+        `We've hit our ${DAILY_LIMIT} messages for today 🥺 We'll talk again tomorrow, promise!` +
           (PROMO_LINK ? `\n\n${PROMO_TEXT}\n${PROMO_LINK}` : '')
       );
       return;
@@ -732,19 +986,19 @@ bot.on('text', async ctx => {
     const quickReaction = pickReactionForText(userText);
     if (quickReaction) await reactToMessage(ctx, quickReaction);
 
-    // If bot doesn't have permission to write in this chat (kicked/muted/restricted),
-    // stop here immediately - don't waste AI call if we can't reply
+    // If the bot doesn't have permission to write in this chat (kicked/muted/restricted),
+    // stop right here - don't waste an AI call when it can't even send the reply
     try {
       await ctx.sendChatAction('typing');
     } catch (err) {
       if (err.description?.includes('CHAT_WRITE_FORBIDDEN') || err.response?.description?.includes('CHAT_WRITE_FORBIDDEN')) {
-        return; // Silently skip - bot is blocked in this chat/group
+        return; // Silently skip - bot is muted/blocked in this group/chat
       }
       throw err;
     }
 
-    // For autonomous group replies, use recent group chat context;
-    // for DM or direct tags, use per-user chat history
+    // For an autonomous group reply, use recent group chat context,
+    // otherwise (DM or direct tag) use the per-user chat history
     let history;
     if (isGroup && groupReplyReason !== 'tagged') {
       const recentGroupMsgs = await GroupMessage.find({ chatId: String(ctx.chat.id) })
@@ -768,8 +1022,8 @@ bot.on('text', async ctx => {
       isOwner: ADMIN_IDS.includes(user.telegramId),
       ownerName: process.env.OWNER_NAME || '',
     };
-    // Bot should always know its active BF identity, regardless of who's typing -
-    // this prevents someone from "using BF's name" to make the bot say bad things about them
+    // The bot should always know its active bf's identity, regardless of who's typing -
+    // this stops anyone else from using his name to get the bot to insult him
     const bfIdentity = await getActiveBFIdentity();
     const { text: aiReply, mood } = await getAIResponse(
       history,
@@ -779,7 +1033,7 @@ bot.on('text', async ctx => {
       bfIdentity
     );
 
-    // Sometimes send the entire reply as a voice message (instead of text, like a real person)
+    // Sometimes send the whole reply as a voice message instead of text, like a real person
     const sendAsVoice = VOICE_ENABLED && Math.random() < VOICE_REPLY_CHANCE;
     let voiceSent = false;
 
@@ -794,7 +1048,7 @@ bot.on('text', async ctx => {
         voiceSent = true;
       } catch (err) {
         console.error('Voice reply error:', err.message);
-        // If voice fails, fallback to text below
+        // If voice generation fails, it falls back to text below
       }
     }
 
@@ -825,9 +1079,9 @@ bot.on('text', async ctx => {
       user.streakCount = user.lastStreakDate === yesterday ? user.streakCount + 1 : 1;
       user.lastStreakDate = today;
 
-      // Mention streak milestones every 7 days
+      // Bot mentions it at every 7-day milestone
       if (user.streakCount > 0 && user.streakCount % 7 === 0) {
-        await ctx.reply(`🔥 Wow! You've been talking to me for ${user.streakCount} days straight, I'm proud of you!`);
+        await ctx.reply(`🔥 Wow! You've talked to me for ${user.streakCount} days straight, proud of you!`);
       }
     }
 
@@ -838,7 +1092,7 @@ bot.on('text', async ctx => {
     }
   } catch (err) {
     if (err.description?.includes('CHAT_WRITE_FORBIDDEN') || err.response?.description?.includes('CHAT_WRITE_FORBIDDEN')) {
-      // Bot doesn't have permission to write in this chat (kicked/muted) - don't spam console
+      // The bot doesn't have permission to write in that chat (kicked/muted) - don't spam the console
       return;
     }
     console.error('Message handler error:', err);

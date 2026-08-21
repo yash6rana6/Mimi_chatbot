@@ -1,24 +1,24 @@
 const { BF } = require('./models');
 
-// Active (non-expired) BF record laata hai, ya null agar nahi hai / expire ho gaya
+// Returns the active (non-expired) BF record, or null if none exists / expired
 async function getActiveBF(telegramId) {
   const bf = await BF.findOne({ telegramId, expiresAt: { $gt: new Date() } }).lean();
   return bf || null;
 }
 
-// Chahe koi bhi message bhej raha ho, ye batata hai ki abhi ka active bf kaun hai (naam/nickname ke saath)
-// Isse bot hamesha apne bf ko pehchanti hai - koi aur uska naam lekar bot ko uske khilaf gaali nahi dilwa sakta
+// Regardless of who is sending a message, returns who the currently active bf is (with name/nickname)
+// This lets the bot always recognize its bf - no one else can trick the bot into insulting them by name
 async function getActiveBFIdentity() {
   const bf = await BF.findOne({ expiresAt: { $gt: new Date() } }).lean();
   return bf || null;
 }
 
-// Admin free mein 24h ke liye bf status deta hai (ya manually-verified UPI payment ke baad)
-// Ek time pe sirf EK hi active bf ho sakta hai - naya set hote hi purana automatically hat jata hai
+// Grants free 24h bf status via admin (or after manually-verified UPI payment)
+// Only one active bf is allowed at a time - setting a new one automatically clears the old one
 async function setBFByAdmin(telegramId, source = 'admin', name = '') {
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-  // Pehle sabhi purane bf records hata do (exclusivity - ek waqt mein ek hi bf)
+  // Clear any previous bf records first (exclusivity - only one bf at a time)
   await BF.deleteMany({ telegramId: { $ne: telegramId } });
 
   return BF.findOneAndUpdate(
@@ -28,7 +28,7 @@ async function setBFByAdmin(telegramId, source = 'admin', name = '') {
   );
 }
 
-// Saare currently-active bf users laata hai (good morning/night broadcast ke liye)
+// Fetches all currently-active bf users (for good morning/night broadcasts)
 async function getAllActiveBFs() {
   return BF.find({ expiresAt: { $gt: new Date() } }).lean();
 }

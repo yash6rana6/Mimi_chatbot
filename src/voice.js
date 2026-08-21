@@ -11,13 +11,13 @@ const SARVAM_LANG = process.env.SARVAM_TTS_LANG || 'hi-IN';
 const SARVAM_SPEAKER = process.env.SARVAM_TTS_SPEAKER || 'anushka';
 const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || 'hi-IN-SwaraNeural';
 
-// VOICE_PROVIDER control karta hai kaunsa use ho:
-// 'sarvam' - sirf Sarvam (agar fail ho to bhi Edge pe fallback nahi hoga)
-// 'edge'   - sirf Edge-TTS (Sarvam bilkul skip)
-// 'auto'   - (default) Sarvam try karo, fail ho to Edge pe automatically fallback
+// VOICE_PROVIDER controls which provider is used:
+// 'sarvam' - Sarvam only (no fallback to Edge if it fails)
+// 'edge'   - Edge-TTS only (Sarvam skipped entirely)
+// 'auto'   - (default) try Sarvam first, fall back to Edge automatically on failure
 const VOICE_PROVIDER = process.env.VOICE_PROVIDER || 'auto';
 
-// ---------- PRIMARY: Sarvam AI (Bulbul v3) - Hinglish ke liye best, real fast API ----------
+// ---------- PRIMARY: Sarvam AI (Bulbul v3) - best for Hinglish, real fast API ----------
 async function sarvamTextToWav(text) {
   const response = await axios.post(
     'https://api.sarvam.ai/text-to-speech',
@@ -39,7 +39,7 @@ async function sarvamTextToWav(text) {
   return Buffer.from(base64Audio, 'base64');
 }
 
-// ---------- BACKUP: Microsoft Edge TTS - unlimited free, agar Sarvam fail/khatam ho jaye ----------
+// ---------- BACKUP: Microsoft Edge TTS - unlimited free, used if Sarvam fails/runs out ----------
 async function edgeTextToMp3(text) {
   const tts = new MsEdgeTTS();
   await tts.setMetadata(EDGE_TTS_VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
@@ -53,7 +53,7 @@ async function edgeTextToMp3(text) {
   });
 }
 
-// Audio Buffer (kisi bhi format) ko Telegram voice-note format (OGG/Opus) mein convert karta hai
+// Converts an audio Buffer (any format) into Telegram voice-note format (OGG/Opus)
 function toOggOpus(audioBuffer, inputFormat) {
   return new Promise((resolve, reject) => {
     const input = new PassThrough();
@@ -75,8 +75,8 @@ function toOggOpus(audioBuffer, inputFormat) {
   });
 }
 
-// Text se seedha ready-to-send Telegram voice note (Buffer) banata hai
-// VOICE_PROVIDER ke hisaab se decide karta hai kaunsa provider use karna hai
+// Generates a ready-to-send Telegram voice note (Buffer) straight from text
+// Decides which provider to use based on VOICE_PROVIDER
 async function generateVoiceNote(text) {
   if (VOICE_PROVIDER === 'edge') {
     const mp3 = await edgeTextToMp3(text);
@@ -88,7 +88,7 @@ async function generateVoiceNote(text) {
     return toOggOpus(wav, 'wav');
   }
 
-  // 'auto' (default): Sarvam try karo (behtar Hinglish quality), fail ho to Edge pe fallback
+  // 'auto' (default): try Sarvam first (better Hinglish quality), fall back to Edge on failure
   if (SARVAM_API_KEY) {
     try {
       const wav = await sarvamTextToWav(text);

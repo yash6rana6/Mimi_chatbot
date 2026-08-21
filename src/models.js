@@ -12,6 +12,9 @@ const userSchema = new mongoose.Schema({
   // Daily chat streak tracking
   streakCount: { type: Number, default: 0 },
   lastStreakDate: String, // 'YYYY-MM-DD' format
+  // Birthday tracking - 'MM-DD' format, saal nahi rakhte (privacy)
+  birthday: String,
+  lastBirthdayWishYear: Number, // isi saal wish kar chuke hain to dobara na kare
 });
 
 // Chat history - context ke liye (last N messages store karenge per user)
@@ -87,4 +90,47 @@ const groupMemberSchema = new mongoose.Schema({
 groupMemberSchema.index({ chatId: 1, telegramId: 1 }, { unique: true });
 const GroupMember = mongoose.model('GroupMember', groupMemberSchema);
 
-module.exports = { User, ChatHistory, GroupMessage, Sticker, Admin, BF, Score, GroupMember };
+// User feedback/suggestions - /feedback command se
+const feedbackSchema = new mongoose.Schema({
+  telegramId: { type: String, required: true },
+  name: String,
+  message: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+const Feedback = mongoose.model('Feedback', feedbackSchema);
+
+// Daily activity - "Member of the Day" ke liye, chatId+telegramId+date pe unique
+// (GroupMessage sirf 2 ghante rehta hai context ke liye, isliye alag lightweight counter chahiye)
+const dailyActivitySchema = new mongoose.Schema({
+  chatId: { type: String, required: true, index: true },
+  telegramId: { type: String, required: true },
+  name: String,
+  date: { type: String, required: true }, // 'YYYY-MM-DD'
+  count: { type: Number, default: 0 },
+});
+dailyActivitySchema.index({ chatId: 1, telegramId: 1, date: 1 }, { unique: true });
+const DailyActivity = mongoose.model('DailyActivity', dailyActivitySchema);
+
+// Matchmaker pool - /matchme se opt-in karke waiting list mein aate hain, match milne pe hat jate hain
+const matchPoolSchema = new mongoose.Schema({
+  chatId: { type: String, required: true, index: true },
+  telegramId: { type: String, required: true },
+  name: String,
+  joinedAt: { type: Date, default: Date.now },
+});
+matchPoolSchema.index({ chatId: 1, telegramId: 1 }, { unique: true });
+const MatchPool = mongoose.model('MatchPool', matchPoolSchema);
+
+module.exports = {
+  User,
+  ChatHistory,
+  GroupMessage,
+  Sticker,
+  Admin,
+  BF,
+  Score,
+  GroupMember,
+  Feedback,
+  DailyActivity,
+  MatchPool,
+};
