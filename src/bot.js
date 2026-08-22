@@ -40,6 +40,18 @@ const VOICE_REPLY_CHANCE = parseFloat(process.env.VOICE_REPLY_CHANCE || '0.15');
 // In-memory cooldown tracker per group (chatId -> last autonomous reply timestamp)
 const lastAutoReplyAt = new Map();
 
+// Tracks active quiz polls: pollId -> { chatId, correctOptionId } - needed to award leaderboard points
+// when someone answers correctly (poll_answer updates don't carry the correct answer back)
+const activeQuizPolls = new Map();
+
+// Builds an HTML mention link for a user (safer than Markdown - fewer escaping issues with names)
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function mentionHTML(user) {
+  return `<a href="tg://user?id=${user.id}">${escapeHtml(user.first_name || 'Player')}</a>`;
+}
+
 // ---------- MongoDB Connect ----------
 mongoose
   .connect(process.env.MONGODB_URI)
@@ -553,20 +565,22 @@ bot.action(/^menu:(.+)$/, async ctx => {
 
   if (game === 'wyr') {
     const q = games.getRandomWYR();
-    return ctx.reply('🆚 Would You Rather...', {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: `A) ${q.a}`, callback_data: 'wyr:a' }],
-          [{ text: `B) ${q.b}`, callback_data: 'wyr:b' }],
-        ],
-      },
-    });
+    return ctx.replyWithPoll('🆚 Would You Rather...', [q.a, q.b], { is_anonymous: false });
   }
 
   if (game === 'quiz') {
     const q = games.getRandomQuiz();
-    const buttons = q.options.map((opt, i) => [{ text: opt, callback_data: `quiz:${i}:${q.correct}` }]);
-    return ctx.reply(`❓ ${q.q}`, { reply_markup: { inline_keyboard: buttons } });
+    const sentPoll = await ctx.replyWithPoll(q.q, q.options, {
+      type: 'quiz',
+      correct_option_id: q.correct,
+      is_anonymous: false,
+      explanation: 'Nice, well done! 🎉',
+    });
+    activeQuizPolls.set(sentPoll.poll.id, {
+      chatId: String(ctx.chat.id),
+      correctOptionId: q.correct,
+    });
+    return;
   }
 
   if (game === 'ttt') {
@@ -576,25 +590,33 @@ bot.action(/^menu:(.+)$/, async ctx => {
     }
     ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
     return ctx.reply(
-      `❌⭕ Tic-Tac-Toe started! ${ctx.from.first_name} issued a challenge.\n\nAny other player, hit "Join"!`,
-      { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
+      `❌⭕ <b>Tic-Tac-Toe</b> started! ${mentionHTML(ctx.from)} issued a challenge.\n\nAny other player, hit "Join"!`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] },
+      }
     );
   }
 });
 
 // ---------- /truth - random truth question ----------
 bot.command('truth', async ctx => {
-  await ctx.reply(`🤔 Truth: ${games.getRandomTruth()}`);
+  await ctx.reply(`🤔 <b>Truth</b> for ${mentionHTML(ctx.from)}:\n\n${games.getRandomTruth()}`, {
+    parse_mode: 'HTML',
+  });
 });
 
 // ---------- /dare - random dare ----------
 bot.command('dare', async ctx => {
-  await ctx.reply(`🔥 Dare: ${games.getRandomDare()}`);
+  await ctx.reply(`🔥 <b>Dare</b> for ${mentionHTML(ctx.from)}:\n\n${games.getRandomDare()}`, {
+    parse_mode: 'HTML',
+  });
 });
 
 // ---------- /truthordare - choose via buttons ----------
 bot.command('truthordare', async ctx => {
-  await ctx.reply('Truth or Dare? 😏', {
+  await ctx.reply(`🎲 <b>Truth or Dare</b>?\n\n${mentionHTML(ctx.from)}, pick one 😏`, {
+    parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: [[
         { text: '🤔 Truth', callback_data: 'tod:truth' },
@@ -608,32 +630,27 @@ bot.action(/^tod:(truth|dare)$/, async ctx => {
   const type = ctx.match[1];
   const result = type === 'truth' ? games.getRandomTruth() : games.getRandomDare();
   const emoji = type === 'truth' ? '🤔' : '🔥';
-  await safeEditMessageText(ctx, `${emoji} ${type === 'truth' ? 'Truth' : 'Dare'}: ${result}`);
+  const label = type === 'truth' ? 'Truth' : 'Dare';
+  await safeEditMessageText(
+    ctx,
+    `${emoji} <b>${label}</b> for ${mentionHTML(ctx.from)}:\n\n${result}`,
+    { parse_mode: 'HTML' }
+  );
   await ctx.answerCbQuery();
 });
 
 // ---------- /wyr - Would You Rather ----------
+// ---------- /wyr - Would You Rather (native poll, shows vote % automatically) ----------
 bot.command('wyr', async ctx => {
   const q = games.getRandomWYR();
-  await ctx.reply(`🆚 Would You Rather...`, {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: `A) ${q.a}`, callback_data: 'wyr:a' }],
-        [{ text: `B) ${q.b}`, callback_data: 'wyr:b' }],
-      ],
-    },
+  await ctx.replyWithPoll('🆚 Would You Rather...', [q.a, q.b], {
+    is_anonymous: false,
   });
-});
-
-bot.action(/^wyr:(a|b)$/, async ctx => {
-  const choice = ctx.match[1].toUpperCase();
-  await ctx.answerCbQuery(`You chose ${choice}! 😄`);
-  await ctx.reply(`Nice choice! ${choice === 'A' ? '🅰️' : '🅱️'} Want to play another? /wyr`);
 });
 
 // ---------- /love <name1> <name2> - Compatibility Calculator ----------
 bot.command('love', async ctx => {
-  const parts = ctx.message.text.split(' ').slice(1).join(' ').split(/\s+aur\s+|\s*&\s*|\s*,\s*/i);
+  const parts = ctx.message.text.split(' ').slice(1).join(' ').split(/\s+and\s+|\s*&\s*|\s*,\s*/i);
   let name1 = (parts[0] || '').trim();
   let name2 = (parts[1] || '').trim();
 
@@ -644,28 +661,38 @@ bot.command('love', async ctx => {
   const { percent, message } = games.calculateLoveCompatibility(name1, name2);
   const bar = '💗'.repeat(Math.round(percent / 10)) + '🖤'.repeat(10 - Math.round(percent / 10));
 
-  await ctx.reply(`💘 ${name1} + ${name2}\n\n${bar}\n${percent}% match!\n\n${message}`);
+  await ctx.reply(
+    `💘 <b>${escapeHtml(name1)}</b> + <b>${escapeHtml(name2)}</b>\n\n${bar}\n<b>${percent}% match!</b>\n\n${message}`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 // ---------- /quiz - relationship/general trivia ----------
+// ---------- /quiz - native Telegram Quiz Poll (looks much nicer, shows results automatically) ----------
 bot.command('quiz', async ctx => {
   const q = games.getRandomQuiz();
-  const buttons = q.options.map((opt, i) => [
-    { text: opt, callback_data: `quiz:${i}:${q.correct}` },
-  ]);
-  await ctx.reply(`❓ ${q.q}`, { reply_markup: { inline_keyboard: buttons } });
+  const sentPoll = await ctx.replyWithPoll(q.q, q.options, {
+    type: 'quiz',
+    correct_option_id: q.correct,
+    is_anonymous: false, // needed so we can track who answered correctly, for the leaderboard
+    explanation: 'Nice, well done! 🎉',
+  });
+
+  // Remember this poll's correct answer + chat, so we can award points when someone answers it
+  activeQuizPolls.set(sentPoll.poll.id, {
+    chatId: String(ctx.chat.id),
+    correctOptionId: q.correct,
+  });
 });
 
-bot.action(/^quiz:(\d):(\d)$/, async ctx => {
-  const chosen = parseInt(ctx.match[1]);
-  const correct = parseInt(ctx.match[2]);
-  if (chosen === correct) {
-    await ctx.answerCbQuery('✅ Correct answer!');
-    await safeEditMessageText(ctx, `✅ That was correct! Really smart 🧠\nWant to play another? /quiz`);
-    await addScore(ctx.chat.id, ctx.from.id, ctx.from.first_name || 'Player', 'quizWins', 10);
-  } else {
-    await ctx.answerCbQuery('❌ Wrong!');
-    await safeEditMessageText(ctx, `❌ That was wrong, no worries! Try again /quiz`);
+// Fires whenever anyone answers a quiz poll - awards leaderboard points on a correct answer
+bot.on('poll_answer', async ctx => {
+  const { poll_id, option_ids, user } = ctx.pollAnswer;
+  const quizData = activeQuizPolls.get(poll_id);
+  if (!quizData || !user) return;
+
+  if (option_ids[0] === quizData.correctOptionId) {
+    await addScore(quizData.chatId, user.id, user.first_name || 'Player', 'quizWins', 10);
   }
 });
 
@@ -679,8 +706,11 @@ bot.command('ttt', async ctx => {
 
   ttt.startGame(chatId, ctx.from.id, ctx.from.first_name || 'Player 1');
   await ctx.reply(
-    `❌⭕ Tic-Tac-Toe shuru! ${ctx.from.first_name} ne challenge kiya hai.\n\nKoi doosra khilaadi "Join" dabao!`,
-    { reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] } }
+    `❌⭕ <b>Tic-Tac-Toe</b> started! ${mentionHTML(ctx.from)} issued a challenge.\n\nAny other player, hit "Join"!`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '🎮 Join Game', callback_data: `ttt_join:${chatId}` }]] },
+    }
   );
 });
 
@@ -692,11 +722,11 @@ bot.action(/^ttt_join:(-?\d+)$/, async ctx => {
   }
 
   await ctx.answerCbQuery('Joined the game!');
-  const p1Name = game.names[game.players[0]];
-  const p2Name = game.names[game.players[1]];
-  await safeEditMessageText(ctx, 
-    `❌ ${p1Name} vs ⭕ ${p2Name}\n\nCurrent turn: ${p1Name} (❌)`,
-    { reply_markup: ttt.buildKeyboard(chatId, game.board) }
+  const p1Name = escapeHtml(game.names[game.players[0]]);
+  const p2Name = escapeHtml(game.names[game.players[1]]);
+  await safeEditMessageText(ctx,
+    `❌ <b>${p1Name}</b> vs ⭕ <b>${p2Name}</b>\n\nCurrent turn: ${p1Name} (❌)`,
+    { parse_mode: 'HTML', reply_markup: ttt.buildKeyboard(chatId, game.board) }
   );
 });
 
@@ -718,25 +748,28 @@ bot.action(/^ttt:(-?\d+):(\d)$/, async ctx => {
   await ctx.answerCbQuery();
 
   const { winner, board, game } = result;
-  const p1Name = game?.names?.[game.players[0]] || 'Player 1';
-  const p2Name = game?.names?.[game.players[1]] || 'Player 2';
+  const p1Name = escapeHtml(game?.names?.[game.players[0]] || 'Player 1');
+  const p2Name = escapeHtml(game?.names?.[game.players[1]] || 'Player 2');
 
   if (winner === 'draw') {
-    await safeEditMessageText(ctx, `🤝 The match ended in a draw! Well played both of you.`, {
+    await safeEditMessageText(ctx, `🤝 <b>Draw!</b> Well played both of you.`, {
+      parse_mode: 'HTML',
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
   } else if (winner) {
     const winnerId = winner === 'X' ? game.players[0] : game.players[1];
     const winnerName = winner === 'X' ? p1Name : p2Name;
-    await safeEditMessageText(ctx, `🎉 ${winnerName} (${winner === 'X' ? '❌' : '⭕'}) won!`, {
+    await safeEditMessageText(ctx, `🎉 <b>${winnerName}</b> (${winner === 'X' ? '❌' : '⭕'}) won! 🏆`, {
+      parse_mode: 'HTML',
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
     await addScore(chatId, winnerId, winnerName, 'tttWins', 15);
   } else {
     const currentGame = ttt.getGame(chatId);
-    const turnName = currentGame.names[currentGame.turn];
+    const turnName = escapeHtml(currentGame.names[currentGame.turn]);
     const turnSymbol = currentGame.turn === currentGame.players[0] ? '❌' : '⭕';
-    await safeEditMessageText(ctx, `❌ ${p1Name} vs ⭕ ${p2Name}\n\nCurrent turn: ${turnName} (${turnSymbol})`, {
+    await safeEditMessageText(ctx, `❌ <b>${p1Name}</b> vs ⭕ <b>${p2Name}</b>\n\nCurrent turn: ${turnName} (${turnSymbol})`, {
+      parse_mode: 'HTML',
       reply_markup: ttt.buildKeyboard(chatId, board),
     });
   }
@@ -757,44 +790,12 @@ bot.command('nickname', async ctx => {
 
 // ---------- /mood - bot tells its current mood ----------
 const MOOD_LINES = [
-  { mood: 'happy', text: '😁 I am in a great mood right now, let us have some fun!' },
-  { mood: 'love', text: '🥰 Feeling a bit romantic today, was thinking of you' },
+  { mood: 'happy', text: "😁 In a really good mood right now, let's do something fun!" },
+  { mood: 'love', text: '🥰 Feeling a bit romantic today, was missing you' },
   { mood: 'laugh', text: '😂 In a playful mood, tell me a joke!' },
   { mood: 'sad', text: '🥺 Feeling a little low, talk to me' },
-  { mood: 'shy', text: '🥰 Feeling shy today for some reason' },
-  { mood: 'neutral', text: '😌 Chill mood, just waiting for your messages' },
-  { mood: 'excited', text: '🤩 Super excited! Something good is about to happen!' },
-  { mood: 'cute', text: '🥰 Feeling adorable today, don\'t you think?' },
-  { mood: 'cool', text: '😎 Just chilling, being awesome as always' },
-  { mood: 'tired', text: '😫 So tired... but still here for you!' },
-  { mood: 'sleepy', text: '😴 Getting sleepy... maybe we should talk tomorrow' },
-  { mood: 'hungry', text: '🍕 Hungry! Feed me compliments or food!' },
-  { mood: 'confused', text: '😕 Confused about everything right now' },
-  { mood: 'worried', text: '😟 A little worried, hold me?' },
-  { mood: 'scared', text: '😨 Scared! Protect me!' },
-  { mood: 'bored', text: '😑 Bored... entertain me please!' },
-  { mood: 'silly', text: '🤪 Feeling goofy and silly today!' },
-  { mood: 'flirty', text: '😏 Feeling flirty... watch out!' },
-  { mood: 'playful', text: '😜 In a playful mood, want to play?' },
-  { mood: 'energetic', text: '⚡ Full of energy! Let\'s do something!' },
-  { mood: 'calm', text: '😌 Peaceful and calm today' },
-  { mood: 'relaxed', text: '🧘 Relaxed and zen mode on' },
-  { mood: 'focused', text: '🎯 Focused on you right now' },
-  { mood: 'proud', text: '😤 Feeling proud of myself today!' },
-  { mood: 'grateful', text: '🙏 Grateful for you being here' },
-  { mood: 'jealous', text: '😒 Feeling a little jealous... whose attention do you have?' },
-  { mood: 'curious', text: '🤔 Curious about what you\'re thinking' },
-  { mood: 'hopeful', text: '🌟 Hopeful for a beautiful day' },
-  { mood: 'lonely', text: '🥺 Feeling lonely, talk to me please' },
-  { mood: 'annoyed', text: '😒 Annoyed at something... tell me I\'m cute' },
-  { mood: 'frustrated', text: '😤 Frustrated! Need a hug' },
-  { mood: 'mischievous', text: '😈 Feeling mischievous... wanna cause trouble?' },
-  { mood: 'dreamy', text: '💭 Daydreaming about you' },
-  { mood: 'nostalgic', text: '🥹 Remembering good times... let\'s make more memories' },
-  { mood: 'blessed', text: '✨ Feeling blessed to have you in my life' },
-  { mood: 'wild', text: '🤘 Feeling wild and free today!' },
-  { mood: 'mysterious', text: '🔮 Mysterious mood... try to figure me out' },
-  { mood: 'gentle', text: '🕊️ Feeling gentle and soft today' }
+  { mood: 'shy', text: '🥰 Feeling a bit shy today, not sure why' },
+  { mood: 'neutral', text: '😌 Chill mood, was just waiting for your messages' },
 ];
 bot.command('mood', async ctx => {
   const pick = MOOD_LINES[Math.floor(Math.random() * MOOD_LINES.length)];
