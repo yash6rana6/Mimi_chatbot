@@ -1,4 +1,4 @@
-// In-memory game state per chat - {chatId: {board, players: [p1Id, p2Id], turn, names: {}}}
+
 const games = new Map();
 
 const EMPTY_BOARD = () => Array(9).fill(null);
