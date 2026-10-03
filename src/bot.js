@@ -1520,6 +1520,16 @@ bot.on("text", async (ctx) => {
   }
 });
 
+const http = require('http');
+const port = process.env.PORT || 3000;
+
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!\n');
+}).listen(port, () => {
+  console.log(`Dummy server listening on port ${port} to satisfy Render`);
+});
+
 // ---------- Launch ----------
 bot.launch().then(() => {
   console.log(`🌸 ${WAIFU_NAME} bot is live!`);
